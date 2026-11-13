@@ -463,5 +463,288 @@ class RubikText(SiteCase):
         self.assertPasses(self.build(body="<p>https://github.com/hebelmx/RubikXplorer</p>"))
 
 
+class GeneratedText(SiteCase):
+    """Problem 1: CSS-generated text is not page text the checker can read, so it is refused."""
+
+    def test_content_string_in_stylesheet_fails(self) -> None:
+        self.assertFails(self.build(css_extra='h1::after { content: "Rubik"; }'), "styles.css", "content")
+
+    def test_content_string_in_style_element_and_attribute_fails(self) -> None:
+        self.assertFails(self.build(head='<style>h1::after { content: "Cube"; }</style>'), "index.html", "content")
+        self.assertFails(self.build(body='<p style="content: \'x\'">x</p>'), "index.html", "content")
+
+    def test_escaped_content_property_fails(self) -> None:
+        self.assertFails(self.build(css_extra=r'h1::after { \63 ontent: "x"; }'), "content")
+        self.assertFails(self.build(css_extra=r'h1::after { content: "R\75 bik"; }'), "content", '"Rubik" in CSS')
+
+    def test_content_from_var_attr_and_counters_fails(self) -> None:
+        for value in ("var(--x)", "attr(title)", "counter(x)", 'counters(x, ".")', "open-quote", "url(a.png)"):
+            with self.subTest(value=value):
+                self.assertFails(self.build(css_extra=f"h1::after {{ content: {value}; }}",
+                                            extra_files={"a.png": "x"}), "content")
+
+    def test_attr_counter_functions_anywhere_fail(self) -> None:
+        for name in ("attr", "counter", "counters"):
+            with self.subTest(name=name):
+                self.assertFails(self.build(css_extra=f"p {{ width: {name}(x); }}"), f"{name}()")
+
+    def test_marker_content_fails(self) -> None:
+        self.assertFails(self.build(css_extra='li::marker { content: "R"; }'), "content")
+
+    def test_allowed_content_values_pass(self) -> None:
+        self.assertPasses(self.build(css_extra='a::before { content: none; } b::after { content: normal; }'
+                                               ' i::before { content: "" !important; }'))
+
+    def test_rubik_in_any_css_string_fails(self) -> None:
+        for css in (':root { --x: "Rubik"; }', 'p { font-family: "Rubik", sans-serif; }',
+                    'a[title="rubik"] { color: red; }', 'p { font: 1rem "Ru\\62 ik"; }'):
+            with self.subTest(css=css):
+                self.assertFails(self.build(css_extra=css), '"Rubik" in CSS')
+
+    def test_strings_outside_font_properties_fail(self) -> None:
+        for css in ('p { text-overflow: "x"; }', 'p { quotes: "a" "b"; }', 'li { list-style-type: "x"; }',
+                    'p { hyphenate-character: "x"; }', 'p { text-emphasis: "x"; }'):
+            with self.subTest(css=css):
+                self.assertFails(self.build(css_extra=css), "styles.css")
+
+    def test_string_rendering_properties_via_var_fail(self) -> None:
+        for prop in ("text-overflow", "hyphenate-character", "quotes", "list-style-type", "text-emphasis-style"):
+            with self.subTest(prop=prop):
+                self.assertFails(self.build(css_extra=f':root {{ --t: "x"; }} p {{ {prop}: var(--t); }}'), prop)
+
+    def test_counters_and_counter_styles_fail(self) -> None:
+        self.assertFails(self.build(css_extra="ol { counter-reset: list-item 17; }"), "counter-reset")
+        self.assertFails(self.build(css_extra="li { counter-increment: list-item 3; }"), "counter-increment")
+        self.assertFails(self.build(css_extra="@counter-style r { system: cyclic; symbols: R; }"), "@counter-style")
+        self.assertFails(self.build(css_extra="ol { list-style-type: lower-alpha; }"), "list-style-type")
+
+    def test_plain_list_styles_pass(self) -> None:
+        self.assertPasses(self.build(css_extra="ul { list-style: none; } ol { list-style-type: decimal; }"))
+
+    def test_font_stack_in_custom_property_passes(self) -> None:
+        self.assertPasses(self.build(css_extra=':root { --font: "IBM Plex Sans", system-ui; } '
+                                               'body { font-family: var(--font); }'))
+
+
+class BaseElement(SiteCase):
+    """Problem 2: <base> changes how every URL resolves, so fragment checks would lie."""
+
+    def test_base_element_fails(self) -> None:
+        self.assertFails(self.build(head='<base href="/cubentia-site/styles.css">'), "index.html", "<base>")
+
+    def test_base_without_href_fails(self) -> None:
+        self.assertFails(self.build(head='<base target="_blank">'), "<base>")
+
+
+class DenyByDefault(SiteCase):
+    """Problem 3: what a static HTML/CSS site never needs is refused outright."""
+
+    def test_embedding_and_scripting_elements_fail(self) -> None:
+        for tag in ("iframe", "frame", "frameset", "object", "embed", "applet", "portal", "script",
+                    "noscript", "template", "slot"):
+            with self.subTest(tag=tag):
+                self.assertFails(self.build(body=f"<{tag}></{tag}>"), f"<{tag}>")
+
+    def test_unknown_elements_fail(self) -> None:
+        for tag in ("bdo", "marquee", "math", "plaintext", "xmp", "video", "audio", "canvas", "dialog"):
+            with self.subTest(tag=tag):
+                self.assertFails(self.build(body=f"<{tag}>x</{tag}>"), f"<{tag}>")
+
+    def test_svg_foreign_object_fails(self) -> None:
+        self.assertFails(self.build(body="<svg><foreignObject><p>x</p></foreignObject></svg>"), "<foreignobject>")
+
+    def test_any_meta_http_equiv_fails(self) -> None:
+        for equiv in ("refresh", "content-security-policy", "x-ua-compatible", "content-type", "default-style"):
+            with self.subTest(equiv=equiv):
+                self.assertFails(self.build(head=f'<meta http-equiv="{equiv}" content="0">'),
+                                 f'<meta http-equiv="{equiv}">')
+
+    def test_srcdoc_fails(self) -> None:
+        self.assertFails(self.build(body='<p srcdoc="&lt;p&gt;x">x</p>'), "srcdoc")
+
+    def test_same_origin_ping_fails(self) -> None:
+        self.assertFails(self.build(body='<a href="#main" ping="/cubentia-site/">x</a>'), "ping")
+
+    def test_srcset_parsing_keeps_commas_in_urls(self) -> None:
+        self.assertFails(self.build(body='<img src="a.png" alt="A" srcset="data:image/png;base64,AA== 1x,'
+                                         'https://x.com/b.png 2x">', extra_files={"a.png": "x"}),
+                         "third-party", "https://x.com/b.png")
+
+    def test_same_origin_srcset_passes(self) -> None:
+        self.assertPasses(self.build(body='<img src="a.png" srcset="a.png 1x, b.png 2x" alt="A">',
+                                     extra_files={"a.png": "x", "b.png": "x"}))
+
+    def test_link_rels_outside_allowlist_fail(self) -> None:
+        for rel in ("preload", "prefetch", "preconnect", "dns-prefetch", "modulepreload", "alternate",
+                    "stylesheet preload", "import", ""):
+            with self.subTest(rel=rel):
+                self.assertFails(self.build(head=f'<link rel="{rel}" href="styles.css">'), "<link rel=")
+
+    def test_allowed_link_rels_pass(self) -> None:
+        self.assertPasses(self.build(head='<link rel="icon" href="a.png">'
+                                          '<link rel="canonical" href="https://hebelmx.github.io/cubentia-site/">'
+                                          '<link rel="manifest" href="m.webmanifest">',
+                                     extra_files={"a.png": "x", "m.webmanifest": '{"name": "Cubentia"}'}))
+
+    def test_event_handlers_fail(self) -> None:
+        for attr in ("onload", "onerror", "onfocus", "onanimationstart", "ONCLICK"):
+            with self.subTest(attr=attr):
+                self.assertFails(self.build(body=f'<p {attr}="x">x</p>'), "event-handler")
+
+    def test_javascript_url_in_any_attribute_fails(self) -> None:
+        self.assertFails(self.build(body='<svg><a href="javascript:alert(1)"><text>x</text></a></svg>'), "script URL")
+        self.assertFails(self.build(body='<p data-x=" java&#9;script:x">x</p>'), "script URL")
+
+    def test_font_face_remote_src_fails(self) -> None:
+        self.assertFails(self.build(css_extra='@font-face { font-family: X; src: local("X"), '
+                                              'url(https://x.com/f.woff2) format("woff2"); }'), "third-party")
+        self.assertFails(self.build(css_extra='@font-face { font-family: X; src: "https://x.com/f.woff2"; }'),
+                         "CSS string in src")
+
+    def test_font_face_local_passes(self) -> None:
+        self.assertPasses(self.build(css_extra='@font-face { font-family: X; src: local("IBM Plex Sans"), '
+                                               'url("styles.css") format("woff2"); }'))
+
+    def test_css_at_rules_outside_allowlist_fail(self) -> None:
+        for rule in ("@namespace url(http://www.w3.org/1999/xhtml);", "@document url(x) { a { color: red } }",
+                     "@-moz-document url-prefix() { a { color: red } }", "@property --x { syntax: '*'; }",
+                     "@font-feature-values X { @swash { a: 1; } }", "@page { margin: 0 }"):
+            with self.subTest(rule=rule):
+                self.assertFails(self.build(css_extra=rule), "at-rule")
+
+    def test_css_functions_outside_allowlist_fail(self) -> None:
+        for value in ('src("https://x.com/a.png")', 'image("https://x.com/a.png")',
+                      "cross-fade(url(a.png), url(b.png))", "element(#main)", "paint(x)"):
+            with self.subTest(value=value):
+                self.assertFails(self.build(css_extra=f"body {{ background-image: {value}; }}"), "CSS function")
+
+    def test_forbidden_word_in_text_attributes_fails(self) -> None:
+        for attr in ("alt", "title", "aria-label", "aria-description", "placeholder", "value", "class", "id"):
+            with self.subTest(attr=attr):
+                self.assertFails(self.build(body=f'<form action="/cubentia-site/"><input {attr}="Rubik"></form>'),
+                                 f"in {attr} of <input>")
+
+    def test_forbidden_word_in_title_and_meta_fails(self) -> None:
+        for meta in ('name="description"', 'property="og:title"', 'property="og:description"',
+                     'name="twitter:title"', 'name="twitter:description"'):
+            with self.subTest(meta=meta):
+                self.assertFails(self.build(head=f'<meta {meta} content="A Rubik tutor">'), "content of <meta>")
+        self.assertFails(self.build(head="<title>Rubik</title>"), "Rubik")
+
+    def test_unknown_attributes_fail(self) -> None:
+        for attr in ('attributionsrc="https://x.com/"', 'xml:base="https://x.com/"', 'lowsrc="https://x.com/a"',
+                     'longdesc="https://x.com/"', 'manifest="x.appcache"', 'is="x-y"', 'popover'):
+            with self.subTest(attr=attr):
+                self.assertFails(self.build(body=f'<p {attr}>x</p>'), "attribute", "is not allowed")
+
+    def test_unlisted_file_types_fail(self) -> None:
+        for name in ("app.js", "feed.xml", "page.shtml", "a.swf"):
+            with self.subTest(name=name):
+                self.assertFails(self.build(extra_files={name: "x"}), name, "file type")
+
+
+class SelfAttack(SiteCase):
+    """Problem 4: bypasses tried against the checker after the deny-by-default rewrite."""
+
+    def test_duplicate_attribute_fails(self) -> None:
+        # Browsers use the first value; a dict of attributes keeps the last.
+        self.assertFails(self.build(body='<img src="https://x.com/a.png" src="a.png" alt="A">',
+                                    extra_files={"a.png": "x"}), "duplicate attribute src")
+
+    def test_backslash_protocol_relative_url_fails(self) -> None:
+        self.assertFails(self.build(body='<img src="/\\x.com/a.png" alt="A">'), "third-party")
+
+    def test_markup_in_svg_title_fails(self) -> None:
+        # In <svg>, <title> is not raw text: the browser parses the <img>, which breaks out.
+        self.assertFails(self.build(body="<svg><title><img src=//x.com/a.png></title></svg>"), "markup inside")
+
+    def test_markup_in_svg_style_fails(self) -> None:
+        self.assertFails(self.build(body="<svg><style><img src=//x.com/a.png></style></svg>"), "'<' in CSS")
+
+    def test_non_css_stylesheet_fails(self) -> None:
+        # Quirks-mode pages accept same-origin stylesheets of any MIME type.
+        self.assertFails(self.build(head='<link rel="stylesheet" href="x.txt">',
+                                    extra_files={"x.txt": "@import url(https://x.com/a.css);"}), "must be a .css file")
+        self.assertFails(self.build(css_extra="@import url(x.txt);", extra_files={"x.txt": "a{}"}),
+                         "must be a .css file")
+
+    def test_xml_stylesheet_processing_instruction_fails(self) -> None:
+        svg = '<?xml-stylesheet href="https://x.com/a.css"?><svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "processing instruction")
+
+    def test_xml_declaration_passes(self) -> None:
+        svg = '<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        self.assertPasses(self.build(extra_files={"logo.svg": svg}))
+
+    def test_dtd_entity_fails(self) -> None:
+        svg = ('<!DOCTYPE svg [<!ENTITY r "Rubik">]><svg xmlns="http://www.w3.org/2000/svg">'
+               '<text>&r;</text></svg>')
+        self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "<!DOCTYPE")
+
+    def test_cdata_text_is_checked(self) -> None:
+        self.assertFails(self.build(body="<svg><text><![CDATA[Rubik]]></text></svg>"), "Rubik")
+
+    def test_combining_marks_and_look_alikes_fail(self) -> None:
+        for word in ("Rúbik", "Rubіk", "Ꭱubik", "Rubiк", "Ｒｕｂｉｋ",
+                     "\U0001d411\U0001d42e\U0001d41b\U0001d422\U0001d424", "RUBİK"):
+            with self.subTest(word=ascii(word)):
+                self.assertFails(self.build(body=f"<p>{word}</p>"), "Rubik")
+
+    def test_bidi_reversal_fails(self) -> None:
+        self.assertFails(self.build(body="<p>‮kibuR‬</p>"), "bidi")
+        self.assertFails(self.build(body='<p title="‮kibuR">x</p>'), "bidi")
+        self.assertFails(self.build(body="<p>kibuR</p>"), "Rubik")
+        self.assertFails(self.build(css_extra=".a { unicode-bidi: bidi-override; }"), "unicode-bidi")
+        self.assertFails(self.build(css_extra=".a { direction: rtl; }"), "direction")
+
+    def test_url_mask_does_not_hide_word(self) -> None:
+        self.assertFails(self.build(body="<p>the //Rubik method</p>"), "Rubik")
+        self.assertFails(self.build(body="<p>see rubik.com/cube</p>"), "Rubik")
+
+    def test_word_split_by_hidden_element_fails(self) -> None:
+        self.assertFails(self.build(body="<p>Ru<span hidden>xx</span>bik</p>"), "split across elements")
+        self.assertFails(self.build(body="<p>R<span hidden>1</span>u<span hidden>2</span>bik</p>"),
+                         "split across elements")
+
+    def test_word_split_in_reverse_or_any_order_fails(self) -> None:
+        self.assertFails(self.build(body='<svg><text x="30">bik</text><text x="0">Ru</text></svg>'), "split across")
+        self.assertFails(self.build(body="<p><span>ik</span> <span>Ru</span> <span>b</span></p>"), "split across")
+
+    def test_reordering_css_fails(self) -> None:
+        self.assertFails(self.build(css_extra=".a { order: 2; }"), "order")
+        self.assertFails(self.build(css_extra=".a { flex-direction: row-reverse; }"), "flex-direction")
+        self.assertFails(self.build(css_extra=".a { flex-flow: wrap-reverse; }"), "flex-flow")
+
+    def test_per_glyph_svg_positions_fail(self) -> None:
+        self.assertFails(self.build(body='<svg><text x="10 0 20 30 40">uRbik</text></svg>'), "per-glyph x")
+
+    def test_word_from_alt_or_field_beside_text_fails(self) -> None:
+        self.assertFails(self.build(body='<p>Ru<img src="a.png" alt="bik"></p>', extra_files={"a.png": "x"}), "Rubik")
+        self.assertFails(self.build(body='<form action="/cubentia-site/"><label>Ru<input value="bik">'
+                                         '</label></form>'), "Rubik")
+
+    def test_non_utf8_charset_fails(self) -> None:
+        self.assertFails(self.build(head='<meta charset="iso-2022-jp">'), "charset")
+
+    def test_data_url_outside_image_contexts_fails(self) -> None:
+        self.assertFails(self.build(css_extra='p { filter: url("data:image/svg+xml,x#f"); }'), "data: URL in CSS filter")
+        self.assertFails(self.build(body='<svg><use href="data:image/svg+xml,x#a"/></svg>'), "data: URL in href")
+        self.assertFails(self.build(head='<link rel="stylesheet" href="data:image/png,x">'), "non-image data:")
+
+    def test_manifest_strings_are_checked(self) -> None:
+        self.assertFails(self.build(extra_files={"m.webmanifest": '{"icons": [{"src": "https://x.com/i.png"}]}'}),
+                         "m.webmanifest", "third-party")
+        self.assertFails(self.build(extra_files={"m.webmanifest": '{"name": "Rubik tutor"}'}), "m.webmanifest", "Rubik")
+
+    def test_unterminated_comment_in_style_element_still_checks_next_block(self) -> None:
+        self.assertFails(self.build(head='<style>a{color:red}/* </style><style>h1::after{content:"x"}</style>'),
+                         "content")
+
+    def test_ordinary_text_and_css_pass(self) -> None:
+        self.assertPasses(self.build(body='<svg viewBox="0 0 10 10"><text x="1" y="5">Cube</text></svg>'
+                                          "<p>A cube &lt;b&gt; tutor, one step at a time.</p>",
+                                     css_extra='a > b { color: red; } a[title="x"] { color: blue; }'))
+
+
 if __name__ == "__main__":
     unittest.main()

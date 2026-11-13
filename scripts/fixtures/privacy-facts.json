@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "applicationId": "com.exxerpro.cubentia",
+  "internetPermission": false,
+  "backupAllowed": false,
+  "runtimePermissions": [],
+  "denylistedSdks": [],
+  "account": false,
+  "ads": false,
+  "analytics": false,
+  "crashReporting": false,
+  "dataLeavesDevice": false,
+  "storage": "app-private"
+}

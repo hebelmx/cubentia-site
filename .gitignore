@@ -4,3 +4,6 @@ __pycache__/
 
 # Local preview directory created by scripts/preview.sh
 .preview.*/
+
+# App facts checked out by CI (pages.yml)
+app-facts/

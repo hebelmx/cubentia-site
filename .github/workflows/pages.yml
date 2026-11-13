@@ -8,7 +8,8 @@ on:
 
 permissions: {}
 
-# Runs on the same ref queue in order, so an older push can never deploy after a newer one.
+# One run per ref at a time; a newer pending run replaces an older pending one, so an older
+# push can never deploy after a newer one (some intermediate pushes may be skipped).
 # A pull request has its own ref, so PR runs never queue behind main.
 concurrency:
   group: pages-${{ github.ref }}

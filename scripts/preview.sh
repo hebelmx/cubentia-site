@@ -6,10 +6,7 @@ set -euo pipefail
 
 PORT="${1:-8000}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PREVIEW_DIR="${ROOT}/.preview"
-
-rm -rf "${PREVIEW_DIR}"
-mkdir -p "${PREVIEW_DIR}"
+PREVIEW_DIR="$(mktemp -d "${ROOT}/.preview.XXXXXX")"
 trap 'rm -rf "${PREVIEW_DIR}"' EXIT
 ln -s "${ROOT}/site" "${PREVIEW_DIR}/cubentia-site"
 

@@ -51,7 +51,7 @@ It runs the checker's self-tests, then `scripts/check_site.py site`, then the Nu
 bash scripts/preview.sh        # or: bash scripts/preview.sh 8080
 ```
 
-Open <http://localhost:8000/cubentia-site/>. The script serves `site/` under `/cubentia-site/` (from a temporary `.preview/` directory with a symlink), so links resolve exactly as on GitHub Pages. The local server does not serve `404.html` for missing paths; open `/cubentia-site/404.html` directly.
+Open <http://localhost:8000/cubentia-site/>. The script serves `site/` under `/cubentia-site/` (from a temporary `.preview.*/` directory with a symlink), so links resolve exactly as on GitHub Pages. The local server does not serve `404.html` for missing paths; open `/cubentia-site/404.html` directly.
 
 ## Deploy
 

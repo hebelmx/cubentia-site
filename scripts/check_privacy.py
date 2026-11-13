@@ -26,8 +26,13 @@ value has no approved wording, a marker is missing or wrong, the page holds any 
 than the contact, or the policy text changed without a new, recorded effective date.
 
 Usage:
-  python3 scripts/check_privacy.py --facts FILE [--page PAGE] [--record RECORD]
+  python3 scripts/check_privacy.py --facts FILE [--page PAGE] [--record RECORD] [--base REV]
   python3 scripts/check_privacy.py --update [--page PAGE] [--record RECORD]
+
+--base REV compares with a trusted previous git revision (CI passes the pull request's base
+commit, or HEAD^1 on main): if the page's policy text hash differs from the hash of REV's page,
+the effective date must be strictly later than REV's recorded effectiveDate. A REV without a
+policy record (the first publish) is allowed and noted; any other failure to read REV fails.
 
 --update rewrites effectiveDate and textSha256 from the page, and refuses unless the page's
 date is later than the recorded one. Without a record it creates one, reading the publisher,
@@ -45,6 +50,7 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -470,9 +476,106 @@ def check_record(page_path: str, record_path: str, page: Page, record: dict,
                         f"(still {date}); bump the date, then run check_privacy.py --update")
 
 
+class PreviousRevisionError(Exception):
+    """The previous revision could not be read for a reason other than "no record there"."""
+
+
+def git(repo: str, *args: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(["git", "-C", repo, *args], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PreviousRevisionError(f"cannot run git ({error})") from error
+
+
+def read_previous(base: str, path: str) -> tuple[str | None, str]:
+    """(content, path in tree) of path at revision base; content is None when base lacks it.
+
+    Raises PreviousRevisionError when base cannot be resolved (unknown, not fetched, a
+    shallow clone without it), path is outside a git work tree, or the blob cannot be read.
+    """
+    if not base or base.startswith("-"):
+        raise PreviousRevisionError(f"invalid base revision {base!r}")
+    directory = os.path.dirname(os.path.abspath(path))
+    top = git(directory, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        raise PreviousRevisionError(f"{shown(path)} is not in a git work tree")
+    toplevel = os.path.realpath(top.stdout.decode("utf-8").strip())
+    relative = os.path.relpath(os.path.realpath(path), toplevel)
+    if relative.startswith(".."):
+        raise PreviousRevisionError(f"{shown(path)} is outside the git work tree {toplevel}")
+    tree_path = relative.replace(os.sep, "/")
+    commit = git(toplevel, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+    if commit.returncode != 0:
+        raise PreviousRevisionError(f"base revision {base!r} is not available (not fetched, "
+                                    f"or a shallow clone without it)")
+    sha = commit.stdout.decode("ascii").strip()
+    listing = git(toplevel, "ls-tree", "-z", sha, "--", tree_path)
+    if listing.returncode != 0:
+        raise PreviousRevisionError(f"cannot list {tree_path} at {base}")
+    if not listing.stdout:
+        return None, tree_path
+    blob = git(toplevel, "cat-file", "blob", f"{sha}:{tree_path}")
+    if blob.returncode != 0:
+        raise PreviousRevisionError(f"cannot read {tree_path} at {base}")
+    try:
+        return blob.stdout.decode("utf-8"), tree_path
+    except UnicodeDecodeError as error:
+        raise PreviousRevisionError(f"{tree_path} at {base} is not UTF-8") from error
+
+
+def check_previous(page_path: str, record_path: str, page: Page, base: str,
+                   problems: list[str], notes: list[str]) -> None:
+    """If the policy text differs from base's, the effective date must be later than base's.
+
+    The previous hash is computed from base's page with this checker, so the committed
+    textSha256 in the same change is never trusted. Only a base without a policy record (the
+    first publish) is allowed without comparison; every other read failure fails.
+    """
+    try:
+        record_source, record_tree = read_previous(base, record_path)
+        if record_source is None:
+            notes.append(f"{record_path}: {base} has no {record_tree} yet; first publish of the "
+                         f"policy, so there is no previous effective date to compare")
+            return
+        page_source, page_tree = read_previous(base, page_path)
+    except PreviousRevisionError as error:
+        problems.append(f"{record_path}: cannot read the previous revision: {error}")
+        return
+    where = f"{record_tree} at {base}"
+    try:
+        previous = json.loads(record_source)
+    except ValueError as error:
+        problems.append(f"{record_path}: the previous record ({where}) is not valid JSON ({error})")
+        return
+    previous_date = previous.get("effectiveDate") if isinstance(previous, dict) else None
+    if not isinstance(previous_date, str) or parse_date(previous_date) is None:
+        problems.append(f"{record_path}: the previous record ({where}) has no valid effectiveDate")
+        return
+    if page_source is None:
+        problems.append(f"{page_path}: {base} has a policy record but no {page_tree}")
+        return
+    previous_digest = Page(page_source).text_sha256()
+    if previous_digest is None:
+        problems.append(f"{page_path}: the previous page ({page_tree} at {base}) has no single <main>")
+        return
+    date, problem = page.effective_date()
+    digest = page.text_sha256()
+    if problem or digest is None:
+        return  # reported by check_markers / check_record
+    if digest != previous_digest and date <= previous_date:
+        problems.append(f"{page_path}: policy text changed since {base} without a later effective "
+                        f"date (still {date}, previous {previous_date}); bump the date, then run "
+                        f"check_privacy.py --update")
+    elif date < previous_date:
+        problems.append(f"{page_path}: effective date {date} is earlier than {previous_date} at {base}")
+
+
 def check_privacy(facts_path: str, page_path: str = DEFAULT_PAGE,
-                  record_path: str = DEFAULT_RECORD) -> list[str]:
+                  record_path: str = DEFAULT_RECORD, base: str | None = None,
+                  notes: list[str] | None = None) -> list[str]:
+    """Problems found. With base, also compare with that revision (see check_previous)."""
     problems: list[str] = []
+    notes = [] if notes is None else notes
     facts_path, page_path, record_path = shown(facts_path), shown(page_path), shown(record_path)
     facts = load_facts(facts_path, problems)
     page = load_page(page_path, problems)
@@ -485,6 +588,8 @@ def check_privacy(facts_path: str, page_path: str = DEFAULT_PAGE,
         check_markers(page_path, page, record, problems)
         check_single_email(page_path, page, record["contactEmail"], problems)
         check_record(page_path, record_path, page, record, problems)
+    if base is not None:
+        check_previous(page_path, record_path, page, base, problems, notes)
     return problems
 
 
@@ -537,6 +642,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--facts", help="the app's docs/privacy-facts.json")
     parser.add_argument("--page", default=DEFAULT_PAGE, help="the policy page")
     parser.add_argument("--record", default=DEFAULT_RECORD, help="the policy record")
+    parser.add_argument("--base", help="a git revision to compare with (the PR base or HEAD^1): "
+                             "if the policy text differs from it, the effective date must be "
+                             "later than its record's; fails if it cannot be read")
     parser.add_argument("--update", action="store_true",
                         help="rewrite the record's effectiveDate and textSha256 from the page")
     args = parser.parse_args(argv)
@@ -546,7 +654,10 @@ def main(argv: list[str]) -> int:
         return 0 if ok else 1
     if not args.facts:
         parser.error("--facts is required unless --update is given")
-    problems = check_privacy(args.facts, args.page, args.record)
+    notes: list[str] = []
+    problems = check_privacy(args.facts, args.page, args.record, args.base, notes)
+    if notes:
+        print("\n".join(notes))
     if problems:
         print("\n".join(problems))
         return 1

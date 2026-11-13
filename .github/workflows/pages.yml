@@ -30,7 +30,32 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Two commits: HEAD^1 is the previous revision on push, schedule and dispatch.
+          fetch-depth: 2
           persist-credentials: false
+
+      # The privacy check compares the policy with a trusted previous revision: the PR's base
+      # commit (fetched explicitly), or the first parent of HEAD otherwise. check.sh fails if
+      # PRIVACY_BASE is unset, and check_privacy.py fails if it cannot be read.
+      - name: Fetch the previous revision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            if [ -z "${PR_BASE_SHA}" ]; then
+              echo "::error::pull_request event has no base sha."
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 "${SERVER_URL}/${REPOSITORY}.git" "${PR_BASE_SHA}"
+            base="${PR_BASE_SHA}"
+          else
+            base="$(git rev-parse --verify HEAD^1)"
+          fi
+          git cat-file -e "${base}^{commit}"
+          echo "PRIVACY_BASE=${base}" >> "${GITHUB_ENV}"
 
       - name: Require APP_REPO
         env:

@@ -496,7 +496,8 @@ class CheckScriptOnCi(unittest.TestCase):
     """check.sh resolves PRIVACY_FACTS before anything else, so these runs stop at once."""
 
     def run_check(self, cwd: str | None = None, **env: str) -> subprocess.CompletedProcess[str]:
-        clean = {k: v for k, v in os.environ.items() if k not in ("PRIVACY_FACTS", "GITHUB_ACTIONS")}
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("PRIVACY_FACTS", "PRIVACY_BASE", "GITHUB_ACTIONS")}
         return subprocess.run(["bash", CHECK_SH], capture_output=True, text=True,
                               env={**clean, **env}, timeout=60, cwd=cwd)
 
@@ -515,6 +516,222 @@ class CheckScriptOnCi(unittest.TestCase):
         result = self.run_check(GITHUB_ACTIONS="true", PRIVACY_FACTS="/nonexistent/privacy-facts.json")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not exist", result.stderr)
+
+    def test_ci_without_privacy_base_fails(self) -> None:
+        result = self.run_check(GITHUB_ACTIONS="true", PRIVACY_FACTS=FIXTURE)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PRIVACY_BASE must be set on CI", result.stderr)
+
+
+class PreviousRevision(unittest.TestCase):
+    """--base compares with a trusted git revision, never with the record in the same change.
+
+    Each case builds a temporary git repository (no network) whose commits hold the page and
+    the record at site/privacy/index.html and privacy-policy.json.
+    """
+
+    NEW_DATE = 'datetime="2026-12-01">1 December 2026'
+    OLD_DATE = 'datetime="2026-11-13">13 November 2026'
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = os.path.join(tmp.name, "repo")
+        self.page_path = os.path.join(self.repo, "site", "privacy", "index.html")
+        self.record_path = os.path.join(self.repo, "privacy-policy.json")
+        os.makedirs(os.path.dirname(self.page_path))
+        self.git("init", "-q", "-b", "main")
+        self.page = read(PAGE)
+        self.record = json.loads(read(RECORD))
+
+    def git(self, *args: str, cwd: str | None = None) -> str:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.invalid",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.invalid",
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        result = subprocess.run(["git", *args], cwd=cwd or self.repo, capture_output=True,
+                                text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def put(self, page: str | None = None, record: dict | None | bool = None) -> None:
+        """Write the page and the record, recomputing textSha256 as an attacker would."""
+        with open(self.page_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(self.page if page is None else page)
+        if record is False:
+            if os.path.exists(self.record_path):
+                os.remove(self.record_path)
+            return
+        record = dict(self.record if record is None else record)
+        record["textSha256"] = Page(read(self.page_path)).text_sha256()
+        with open(self.record_path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(record, handle)
+
+    def commit(self, message: str = "c") -> str:
+        self.git("add", "-A")
+        self.git("commit", "-q", "--allow-empty", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def problems(self, base: str, repo: str | None = None,
+                 notes: list[str] | None = None) -> list[str]:
+        repo = repo or self.repo
+        return check_privacy(FIXTURE, os.path.join(repo, "site", "privacy", "index.html"),
+                             os.path.join(repo, "privacy-policy.json"), base, notes)
+
+    def changed_page(self, date: str | None = None) -> str:
+        self.assertIn(CHANGES_TEXT, self.page)
+        page = self.page.replace(CHANGES_TEXT, "This policy may change at any time.")
+        return page if date is None else page.replace(self.OLD_DATE, date)
+
+    def published(self) -> str:
+        """main holds the shipped page and record; returns its commit."""
+        self.put()
+        return self.commit("publish")
+
+    def test_text_and_committed_hash_changed_same_date_fails(self) -> None:
+        base = self.published()
+        self.put(page=self.changed_page())  # the record's hash is recomputed, the date is kept
+        problems = self.problems(base)
+        self.assertTrue(any("policy text changed since" in p for p in problems), problems)
+        # Without --base this change is invisible, which is the bug being closed.
+        self.assertEqual(self.problems(None), [])
+
+    def test_age_coverage_change_same_date_fails(self) -> None:
+        base = self.published()
+        age = "This policy applies to Learners of any age."
+        self.assertIn(age, self.page)
+        self.put(page=self.page.replace(age, "This policy applies to Learners aged 13 or older."))
+        self.assertTrue(any("policy text changed since" in p for p in self.problems(base)))
+
+    def test_text_changed_with_later_date_passes(self) -> None:
+        base = self.published()
+        self.put(page=self.changed_page(self.NEW_DATE), record={**self.record,
+                                                                "effectiveDate": "2026-12-01"})
+        self.assertEqual(self.problems(base), [])
+
+    def test_date_moved_backwards_fails(self) -> None:
+        base = self.published()
+        earlier = 'datetime="2026-11-01">1 November 2026'
+        self.put(page=self.changed_page(earlier), record={**self.record,
+                                                          "effectiveDate": "2026-11-01"})
+        self.assertTrue(any("without a later effective date" in p for p in self.problems(base)))
+
+    def test_unchanged_text_passes(self) -> None:
+        base = self.published()
+        self.put()
+        self.assertEqual(self.problems(base), [])
+
+    def test_committed_hash_is_not_trusted_from_base_either(self) -> None:
+        # A base record whose textSha256 was already forged still compares by base's page.
+        self.put()
+        forged = dict(self.record)
+        with open(self.record_path, "w", encoding="utf-8") as handle:
+            json.dump({**forged, "textSha256": "0" * 64}, handle)
+        base = self.commit()
+        self.put(page=self.changed_page())
+        self.assertTrue(any("policy text changed since" in p for p in self.problems(base)))
+
+    def test_other_record_fields_changed_same_date_fails(self) -> None:
+        base = self.published()
+        page = self.page.replace("exxerpro@exxerpro.com", "privacy@exxerpro.com")
+        self.put(page=page, record={**self.record, "contactEmail": "privacy@exxerpro.com"})
+        self.assertTrue(any("policy text changed since" in p for p in self.problems(base)))
+
+    def test_first_publish_without_previous_record_passes_and_says_so(self) -> None:
+        with open(os.path.join(self.repo, "README.md"), "w") as handle:
+            handle.write("site\n")
+        base = self.commit("no policy yet")
+        self.put()
+        notes: list[str] = []
+        self.assertEqual(self.problems(base, notes=notes), [])
+        self.assertTrue(any("first publish" in n for n in notes), notes)
+
+    def test_cli_prints_first_publish_note(self) -> None:
+        base = self.commit("empty")
+        self.put()
+        result = subprocess.run([sys.executable, CHECKER, "--facts", FIXTURE, "--page",
+                                 self.page_path, "--record", self.record_path, "--base", base],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("first publish", result.stdout)
+        self.assertTrue(result.stdout.strip().endswith("OK"))
+
+    def test_record_deleted_in_change_fails(self) -> None:
+        base = self.published()
+        self.put(page=self.changed_page(), record=False)
+        self.assertTrue(any("policy record not found" in p for p in self.problems(base)))
+
+    def test_base_record_without_page_fails(self) -> None:
+        self.put()
+        os.remove(self.page_path)
+        base = self.commit()
+        self.put()
+        self.assertTrue(any("has a policy record but no" in p for p in self.problems(base)))
+
+    def test_base_record_with_bad_date_fails(self) -> None:
+        self.put(record={**self.record, "effectiveDate": "13/11/2026"})
+        base = self.commit()
+        self.put()
+        self.assertTrue(any("no valid effectiveDate" in p for p in self.problems(base)))
+
+    def test_base_record_invalid_json_fails(self) -> None:
+        self.put()
+        with open(self.record_path, "w") as handle:
+            handle.write("{")
+        base = self.commit()
+        self.put()
+        self.assertTrue(any("not valid JSON" in p for p in self.problems(base)))
+
+    def test_unknown_base_fails_closed(self) -> None:
+        self.published()
+        for base in ("does-not-exist", "0" * 40, "", "--output=x"):
+            problems = self.problems(base)
+            self.assertTrue(any("cannot read the previous revision" in p for p in problems),
+                            (base, problems))
+
+    def test_page_outside_a_git_repo_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as plain:
+            os.makedirs(os.path.join(plain, "site", "privacy"))
+            with open(os.path.join(plain, "site", "privacy", "index.html"), "w",
+                      encoding="utf-8") as handle:
+                handle.write(self.page)
+            with open(os.path.join(plain, "privacy-policy.json"), "w") as handle:
+                json.dump(self.record, handle)
+            env_git_dir = os.environ.get("GIT_CEILING_DIRECTORIES")
+            os.environ["GIT_CEILING_DIRECTORIES"] = os.path.dirname(plain)
+            try:
+                problems = self.problems("HEAD", repo=plain)
+            finally:
+                if env_git_dir is None:
+                    del os.environ["GIT_CEILING_DIRECTORIES"]
+                else:
+                    os.environ["GIT_CEILING_DIRECTORIES"] = env_git_dir
+        self.assertTrue(any("not in a git work tree" in p for p in problems), problems)
+
+    def test_push_to_main_with_merge_commit_uses_first_parent(self) -> None:
+        self.published()
+        self.git("checkout", "-q", "-b", "feature")
+        self.put(page=self.changed_page())  # same date, hash recomputed
+        self.commit("feature")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", "feature")
+        # HEAD^1 is the previous main; HEAD^2 (the feature tip) would hide the change.
+        self.assertTrue(any("policy text changed since" in p for p in self.problems("HEAD^1")))
+        self.assertEqual(self.problems("HEAD^2"), [])
+
+    def test_shallow_clone_without_parent_fails_closed(self) -> None:
+        self.published()
+        self.put(page=self.changed_page())
+        self.commit("change")
+        clone = os.path.join(os.path.dirname(self.repo), "clone")
+        self.git("clone", "-q", "--depth", "1", "file://" + self.repo, clone,
+                 cwd=os.path.dirname(self.repo))
+        problems = self.problems("HEAD^1", repo=clone)
+        self.assertTrue(any("is not available" in p for p in problems), problems)
+        deeper = os.path.join(os.path.dirname(self.repo), "clone2")
+        self.git("clone", "-q", "--depth", "2", "file://" + self.repo, deeper,
+                 cwd=os.path.dirname(self.repo))
+        self.assertTrue(any("policy text changed since" in p
+                            for p in self.problems("HEAD^1", repo=deeper)))
 
 
 if __name__ == "__main__":

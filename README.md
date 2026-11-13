@@ -51,6 +51,8 @@ bash scripts/check.sh
 
 It runs the checkers' self-tests, then `scripts/check_site.py site`, then `scripts/check_privacy.py` (below), then the Nu Html Checker (`vnu-jar`, version pinned in `check.sh`) on the HTML and CSS. It exits non-zero on any problem. `check_site.py` and `check_privacy.py` print each problem as `file: message`; the Nu Html Checker uses its own format.
 
+`PRIVACY_BASE` names the git revision the privacy check compares the policy with (see [Changing the policy](#changing-the-policy)); it must be set on CI and is optional locally.
+
 `PRIVACY_FACTS` names the app's `docs/privacy-facts.json`. On CI (`GITHUB_ACTIONS=true`) it must be set and the file must exist. Locally, when it is unset, `check.sh` uses `scripts/fixtures/privacy-facts.json` (a copy of the app's v1.0 file) and says so, so no network is needed. To check against a local app checkout:
 
 ```sh
@@ -75,6 +77,14 @@ The app's build exports what it can prove about privacy to `docs/privacy-facts.j
 4. The self-tests in `scripts/test_check_privacy.py` copy the shipped page and pin its effective date (`DATE_MARKER`, `2026-11-13`) and some sentences. Update those literals to the new page.
 5. Run `bash scripts/check.sh` and commit the page, the record and the tests together.
 
+The record in the same change is not trusted on its own: recomputing `textSha256` while keeping the date would satisfy it. So `check_privacy.py --base REV` also compares with a trusted previous git revision. It hashes `REV`'s page with the current checker, and if this page's hash differs, the effective date must be strictly later than `REV`'s recorded `effectiveDate`. If `REV` has no `privacy-policy.json` yet (the first publish), the comparison is skipped and the output says so. Any other failure to read `REV` (unknown or unfetched revision, a shallow clone without it, a record without a page, an invalid record) fails the check.
+
+`check.sh` passes `PRIVACY_BASE` as `--base`. On CI it must be set: `pages.yml` checks out two commits and sets it to the pull request's base commit (fetched explicitly) on a pull request, and to `HEAD^1` (the first parent, the previous `main` for a merge commit) on push, schedule and manual runs. Locally it is optional and needs no network; to compare with your local `main`:
+
+```sh
+PRIVACY_BASE=main bash scripts/check.sh
+```
+
 To change the publisher, the Play developer name or the contact, edit the marker on the page and the matching field (`publisher`, `playDeveloper` or `contactEmail`) in `privacy-policy.json` by hand, then follow the steps above. `--update` rewrites only `effectiveDate` and `textSha256`.
 
 When the app's facts change, the daily scheduled run fails until the page states the new facts (and gets a new date). Copy the app's new `docs/privacy-facts.json` over `scripts/fixtures/privacy-facts.json` and update `test_fixture_is_the_app_v1_file` in the same change, or the self-tests fail against the old fixture.
@@ -93,7 +103,7 @@ Open <http://localhost:8000/cubentia-site/>. The script serves `site/` under `/c
 
 `.github/workflows/pages.yml` has two jobs:
 
-- `check` runs `scripts/check.sh` on every pull request, on every push to `main`, daily (`schedule`) and on manual dispatch. It has only `contents: read`. It first fails if the repository variable `APP_REPO` (the app repository, `owner/name`) is empty, then reads only `docs/privacy-facts.json` from `APP_REPO` at `main` with a sparse checkout into `app-facts/` (the app repository is public; no token beyond the default), and passes it as `PRIVACY_FACTS`. For a push or a manual dispatch on `main` it also uploads `site/` as the Pages artifact.
+- `check` runs `scripts/check.sh` on every pull request, on every push to `main`, daily (`schedule`) and on manual dispatch. It has only `contents: read`. It first fails if the repository variable `APP_REPO` (the app repository, `owner/name`) is empty, then reads only `docs/privacy-facts.json` from `APP_REPO` at `main` with a sparse checkout into `app-facts/` (the app repository is public; no token beyond the default), and passes it as `PRIVACY_FACTS`. It checks out two commits and sets `PRIVACY_BASE` to the pull request's base commit or to `HEAD^1`, and fails if that revision cannot be read. For a push or a manual dispatch on `main` it also uploads `site/` as the Pages artifact.
 - `deploy` runs only for a push or a manual dispatch on `main`, after `check` passes (`needs: check`). It alone has `pages: write` and `id-token: write`, uses the `github-pages` environment and publishes with `configure-pages` and `deploy-pages`.
 
 A pull request or a scheduled run runs `check` only: no artifact is uploaded and nothing is deployed. The daily run catches drift between the app's facts and the policy. Merging to `main` publishes the site. Every action is pinned to a full commit SHA. No secrets are used.

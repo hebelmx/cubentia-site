@@ -287,5 +287,114 @@ class Stylesheet(A11yCase):
                                                      'href="/cubentia-site/styles.css">'))
 
 
+class TextColor(A11yCase):
+    """Text whose color does not come from the checked tokens fails (deny by default)."""
+
+    def assertSiteFails(self, extra_files: dict[str, str], *needles: str) -> None:
+        problems = check_a11y(self.build(extra_files=extra_files))
+        self.assertTrue(problems, "expected the checker to fail")
+        joined = "\n".join(problems)
+        for needle in needles:
+            self.assertIn(needle, joined)
+
+    def test_acceptance_gate_svg_text(self) -> None:
+        self.assertFails(self.index_with(
+            "<p>An offline tutor.</p>",
+            '<svg width="250" height="40"><text x="0" y="25" fill="#f4f5f7" font-size="16">'
+            "Help for Learners</text></svg>"), "<text> is not allowed", "contrast")
+
+    def test_svg_text_elements(self) -> None:
+        for markup, tag in (
+                ('<svg><text>x</text></svg>', "text"),
+                ('<svg><TEXT>x</TEXT></svg>', "text"),
+                ('<svg><text/></svg>', "text"),
+                ('<svg><g><tspan fill="#eee">x</tspan></g></svg>', "tspan"),
+                ('<svg><textPath href="#p">x</textPath></svg>', "textpath"),
+                ('<svg><foreignObject><p>x</p></foreignObject></svg>', "foreignobject"),
+                ('<svg><switch><g/></switch></svg>', "switch"),
+                ('<math><mi mathcolor="#eee">x</mi></math>', "math"),
+                ('<font color="#eee">x</font>', "font"),
+                ('<x-label>x</x-label>', "x-label")):
+            with self.subTest(markup=markup):
+                self.assertFails(self.index_with("<p>An offline tutor.</p>", markup),
+                                 f"<{tag}> is not allowed")
+
+    def test_non_text_svg_passes(self) -> None:
+        self.assertPasses(self.index_with(
+            "<p>An offline tutor.</p>",
+            '<svg viewBox="0 0 10 10" aria-hidden="true" focusable="false"><title>Cube</title>'
+            '<defs><linearGradient id="g"><stop offset="0" stop-color="#5b3fd1"/>'
+            '</linearGradient></defs><g fill="url(#g)"><rect width="10" height="10"/>'
+            '<path d="M0 0h5v5z"/></g></svg>'))
+
+    def test_legacy_color_attributes(self) -> None:
+        for name in ("color", "bgcolor", "text", "link", "vlink", "alink"):
+            with self.subTest(name=name):
+                self.assertFails(self.index_with("<body>", f'<body {name}="#f4f5f7">'),
+                                 f"has a {name} attribute")
+
+    def test_placeholder(self) -> None:
+        self.assertFails(self.index_with("<p>An offline tutor.</p>",
+                                         '<input aria-label="q" placeholder="Search">'),
+                         "placeholder attribute")
+
+    def test_style_attribute_on_svg(self) -> None:
+        self.assertFails(self.index_with("<p>An offline tutor.</p>",
+                                         '<svg style="color:#eee"><rect width="1" height="1"/></svg>'),
+                         "<svg> has a style attribute")
+
+    def test_style_element_inside_svg(self) -> None:
+        self.assertFails(self.index_with("<p>An offline tutor.</p>",
+                                         "<svg><style>p { color: #eee }</style></svg>"),
+                         "<style> element")
+
+    def test_svg_data_urls(self) -> None:
+        svg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Ctext%3Ex%3C/text%3E%3C/svg%3E"
+        for markup in (f'<img alt="x" src="{svg}">',
+                       f'<img alt="x" src="DATA:IMAGE/SVG+XML,x">',
+                       f'<img alt="x" src=" data:image/svg%2Bxml;base64,PHN2Zz4=">',
+                       f'<img alt="x" src="da&#x74;a:image/svg+xml,x">',
+                       f'<img alt="x" src="da\nta:image/svg+xml,x">',
+                       f'<img alt="x" src="data:,x">',
+                       f'<img alt="x" src="data:text/html,x">',
+                       f'<picture><source srcset="a.png 1x, data:image/svg+xml,x 2x">'
+                       f'<img alt="x" src="a.png"></picture>',
+                       f'<svg><image href="{svg}"/></svg>',
+                       f'<svg><image xlink:href="{svg}"/></svg>'):
+            with self.subTest(markup=markup):
+                self.assertFails(self.index_with("<p>An offline tutor.</p>", markup), "data: URL")
+
+    def test_raster_data_url_passes(self) -> None:
+        self.assertPasses(self.index_with("<p>An offline tutor.</p>",
+                                          '<img alt="x" src="data:image/png;base64,iVBORw0KGgo=">'))
+
+    def test_svg_files_are_checked(self) -> None:
+        for svg, needle in (
+                ('<svg xmlns="http://www.w3.org/2000/svg"><text fill="#eee">x</text></svg>', "<text>"),
+                ('<svg xmlns="http://www.w3.org/2000/svg"><symbol id="s"><tspan>x</tspan>'
+                 '</symbol></svg>', "<tspan>"),
+                ('<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><p>x</p>'
+                 '</foreignObject></svg>', "<foreignobject>"),
+                ('<svg xmlns="http://www.w3.org/2000/svg"><style>rect{fill:red}</style></svg>',
+                 "<style>"),
+                ('<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml,x"/>'
+                 '</svg>', "data: URL")):
+            with self.subTest(svg=svg):
+                self.assertSiteFails({"img/logo.SVG": svg}, "img/logo.SVG: ", needle)
+
+    def test_non_text_svg_file_passes(self) -> None:
+        problems = check_a11y(self.build(extra_files={
+            "logo.svg": '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" '
+                        'viewBox="0 0 1 1"><title>Logo</title><rect width="1" height="1" '
+                        'fill="#5b3fd1"/></svg>'}))
+        self.assertEqual(problems, [])
+
+    def test_htm_and_xhtml_pages_are_checked(self) -> None:
+        page = INDEX.replace("<p>An offline tutor.</p>", '<p style="color:#eee">x</p>')
+        for name in ("other.htm", "other.xhtml"):
+            with self.subTest(name=name):
+                self.assertSiteFails({name: page}, f"{name}: <p> has a style attribute")
+
+
 if __name__ == "__main__":
     unittest.main()

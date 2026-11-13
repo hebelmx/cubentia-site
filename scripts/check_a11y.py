@@ -6,7 +6,7 @@ WCAG 2.2 AA. Keyboard flow, zoom, reflow and the rendered light and dark themes 
 hand on the pull request. Color contrast is checked by scripts/check_privacy.py, which reads
 the one stylesheet every page loads.
 
-Every .html file under the site directory must have:
+Every page (.html, .htm or .xhtml file) under the site directory must have:
 
 * <html lang="en"> and a non-empty <title>;
 * a viewport meta that does not block zoom (no user-scalable=no or 0, no maximum-scale);
@@ -21,6 +21,14 @@ Every .html file under the site directory must have:
   /cubentia-site/styles.css), no <style> element and no style="" attribute, so all of a
   page's CSS is in the stylesheet the contrast check reads.
 
+No text may get its color from anywhere but that stylesheet (deny by default). On every page
+(.html, .htm, .xhtml) only the HTML elements check_site.py allows and SVG elements that cannot
+render text are accepted: SVG <text>, <tspan>, <textPath>, <foreignObject>, MathML and any
+other element are rejected, as are the legacy color attributes (color, bgcolor, text, link,
+vlink, alink), placeholder (the browser's placeholder color is not checked) and data: URLs
+other than raster images (a data: SVG can hold text). Every .svg file under the site directory
+may hold only SVG elements that cannot render text, under the same attribute and data: rules.
+
 Usage: python3 scripts/check_a11y.py [SITE_DIR]   (default: site)
 Prints each problem as "file: message" and exits 1 if there is any; prints "OK" otherwise.
 """
@@ -32,12 +40,58 @@ import posixpath
 import re
 import sys
 from html.parser import HTMLParser
+from urllib.parse import unquote
+
+from check_site import HTML_ELEMENTS
 
 PROJECT_PREFIX = "/cubentia-site/"
 STYLESHEET = "styles.css"
 LANDMARKS = ("header", "main", "footer")
 HEADING = re.compile(r"h([1-6])")
 ALWAYS_FOCUSABLE = {"button", "select", "textarea", "iframe", "summary"}
+PAGE_EXTENSIONS = (".html", ".htm", ".xhtml")
+SVG_EXTENSION = ".svg"
+# SVG elements that cannot render text. SVG text, tspan, textPath and foreignObject (and any
+# element not listed) would show text whose color the contrast check does not read.
+SVG_NON_TEXT_ELEMENTS = {
+    "svg", "g", "defs", "symbol", "use", "path", "rect", "circle", "ellipse", "line",
+    "polyline", "polygon", "desc", "title", "metadata", "lineargradient", "radialgradient",
+    "stop", "clippath", "mask", "pattern", "image",
+}
+PAGE_ELEMENTS = HTML_ELEMENTS | SVG_NON_TEXT_ELEMENTS
+LEGACY_COLOR_ATTRS = ("alink", "bgcolor", "color", "link", "text", "vlink")
+DATA_URL_ATTRS = {"src", "srcset", "href", "xlink:href", "imagesrcset"}
+# Raster images only: their pixels are not rendered from markup. (Text drawn into a raster
+# image is an image of text, checked by hand.)
+RASTER_DATA_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
+                     "image/x-icon", "image/vnd.microsoft.icon"}
+DATA_URL = re.compile(r"(?<![a-z0-9+.-])data:([^;,]*)")
+
+
+def text_color_problems(tag: str, attr: dict[str, str | None], allowed: set[str]) -> list[str]:
+    """Ways an element could show text whose color does not come from the checked tokens."""
+    problems: list[str] = []
+    if tag not in allowed:
+        problems.append(f"<{tag}> is not allowed: it can show text whose color the contrast "
+                        f"check does not cover (only {STYLESHEET} may set text colors)")
+    for name in LEGACY_COLOR_ATTRS:
+        if name in attr:
+            problems.append(f"<{tag}> has a {name} attribute: text colors come only from "
+                            f"the {STYLESHEET} tokens")
+    if "placeholder" in attr:
+        problems.append(f"<{tag}> has a placeholder attribute: the browser's placeholder "
+                        f"color is not covered by the contrast check")
+    for name, value in attr.items():
+        if name not in DATA_URL_ATTRS or not value:
+            continue
+        clean = re.sub(r"[\t\n\r]", "", unquote(value)).lower()
+        for match in DATA_URL.finditer(clean):
+            media = match.group(1).strip()
+            if media not in RASTER_DATA_TYPES:
+                problems.append(f"data: URL of type {media or '(none)'!r} in {name} of <{tag}> "
+                                f"is not allowed: only raster images (a data: SVG can hold "
+                                f"text the contrast check does not cover)")
+    return problems
 
 
 class Link:
@@ -76,6 +130,7 @@ class A11yParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = {name.lower(): value for name, value in attrs}
+        self.problems += text_color_problems(tag, attr, PAGE_ELEMENTS)
         if tag == "html" and not self.html_seen:
             self.html_seen = True
             self.lang = attr.get("lang")
@@ -226,6 +281,25 @@ def check_page(page_rel: str, html: str) -> list[str]:
     return [f"{page_rel}: {problem}" for problem in problems]
 
 
+class SvgFileParser(HTMLParser):
+    """An .svg file may hold only SVG elements that cannot render text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.problems: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = {name.lower(): value for name, value in attrs}
+        self.problems += text_color_problems(tag, attr, SVG_NON_TEXT_ELEMENTS)
+
+
+def check_svg_file(rel: str, text: str) -> list[str]:
+    parser = SvgFileParser()
+    parser.feed(text)
+    parser.close()
+    return [f"{rel}: {problem}" for problem in parser.problems]
+
+
 def check_a11y(site_dir: str) -> list[str]:
     if not os.path.isdir(site_dir):
         return [f"{site_dir}: not a directory"]
@@ -234,18 +308,22 @@ def check_a11y(site_dir: str) -> list[str]:
     for root, dirs, files in os.walk(site_dir):
         dirs.sort()
         for name in sorted(files):
-            if not name.lower().endswith(".html"):
+            lower = name.lower()
+            if not lower.endswith(PAGE_EXTENSIONS + (SVG_EXTENSION,)):
                 continue
             path = os.path.join(root, name)
             rel = os.path.relpath(path, site_dir).replace(os.sep, "/")
-            pages += 1
             try:
                 with open(path, encoding="utf-8") as handle:
-                    html = handle.read()
+                    text = handle.read()
             except (OSError, UnicodeDecodeError) as error:
-                problems.append(f"{rel}: cannot read the page ({error})")
+                problems.append(f"{rel}: cannot read the {'image' if lower.endswith(SVG_EXTENSION) else 'page'} ({error})")
                 continue
-            problems += check_page(rel, html)
+            if lower.endswith(SVG_EXTENSION):
+                problems += check_svg_file(rel, text)
+                continue
+            pages += 1
+            problems += check_page(rel, text)
     if not pages:
         problems.append(f"{site_dir}: no .html pages found")
     return problems

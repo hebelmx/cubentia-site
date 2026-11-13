@@ -23,6 +23,10 @@ statement must be a visible <p> or <li> inside <main>: no hiding attributes on i
 ancestors, and only attribute-free <code>, <em> or <strong> inside it. Every stylesheet the
 page loads and every style="" attribute may use only allowlisted CSS (CSS_PROPERTIES and
 CSS_TOKENS), so no rule can hide, shrink, move away or recolor a statement out of sight.
+Every text color (the ink tokens and the browser's default text colors) must reach
+MIN_TEXT_CONTRAST (4.5:1, WCAG 2.2 AA for normal text; the check cannot tell large text apart)
+against every background, and every color token used in a border or outline must reach
+MIN_NON_TEXT_CONTRAST (3:1, WCAG 1.4.11), in both schemes.
 
 The check fails when a fact has no statement with an equal value, the page states a fact the
 file lacks, statements conflict, are empty, hidden or worded otherwise than approved, a fact
@@ -110,19 +114,29 @@ STATEMENT_ANCESTOR_ATTRS = {"id", "lang", "dir"}
 # whatever the selector: no display:none, visibility, opacity, positioning, transform, clip,
 # width/height, overflow, text-indent, content or tiny font sizes. Colors are only the tokens
 # below, which are defined on :root (and overridden only in @media (prefers-color-scheme:
-# dark)); every text-color token must contrast with every background token in both schemes.
+# dark)). In both schemes, every text color (ink tokens and the browser's default text colors)
+# must reach MIN_TEXT_CONTRAST against every background (surface tokens and the browser's
+# canvas), and every token used in a border or outline must reach MIN_NON_TEXT_CONTRAST.
 # No escapes, !important, nested rules or other at-rules.
 CSS_TOKENS = {
     "--surface": "surface", "--surface-raised": "surface",
     "--ink": "ink", "--ink-muted": "ink", "--accent": "ink",
     "--font-sans": "font", "--measure": "measure", "--gutter": "length",
 }
-# Browser default text and link colors, and canvas colors, per scheme: also checked.
+# Browser default text and canvas colors, per scheme: always checked.
 UA_COLORS = {
-    "light": {"ink": ["#000000", "#0000ee", "#551a8b", "#ee0000"], "surface": ["#ffffff"]},
-    "dark": {"ink": ["#ffffff", "#9e9eff", "#d0adf0", "#ff9e9e"], "surface": ["#121212"]},
+    "light": {"ink": ["#000000"], "surface": ["#ffffff"]},
+    "dark": {"ink": ["#ffffff"], "surface": ["#121212"]},
 }
-MIN_CONTRAST = 3.0
+# Browser default link colors (link, visited, active), per scheme. Author styles override them
+# whatever the specificity, so they are checked only when no rule with selector exactly "a"
+# (outside the dark media block) sets color: that rule decides every link's color.
+UA_LINK_COLORS = {
+    "light": ["#0000ee", "#551a8b", "#ee0000"],
+    "dark": ["#9e9eff", "#d0adf0", "#ff9e9e"],
+}
+MIN_TEXT_CONTRAST = 4.5
+MIN_NON_TEXT_CONTRAST = 3.0
 FONT_FAMILIES = {"ibm plex sans", "system-ui", "-apple-system", "segoe ui", "roboto",
                  "helvetica neue", "arial", "sans-serif"}
 DARK_MEDIA = "(prefers-color-scheme: dark)"
@@ -469,7 +483,9 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
     if any(e.tag == "base" for e in page.elements):
         problems.append(f"{page_path}: the policy page may not have a <base> element")
     tokens: dict[str, dict[str, str]] = {"light": {}, "dark": {}}
+    line_tokens: set[str] = set()
     scheme_set = False
+    links_colored = False
     for _, path, content in sheets:
         if content is None:
             continue
@@ -478,11 +494,15 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
         problems += [f"{where}: {p}" for p in sheet.problems]
         for dark, selector, declarations in sheet.rules:
             for name, value in declarations:
+                if name in ("border", "outline"):
+                    line_tokens.update(m.group(1) for m in CSS_VAR.finditer(value))
                 problem = css_declaration_problem(name, value, selector)
                 if problem:
                     problems.append(f"{where}: {problem} (in {selector[:40]!r})")
                 elif name == "color-scheme" and selector == ":root" and not dark:
                     scheme_set = True
+                elif name == "color" and selector == "a" and not dark:
+                    links_colored = True
                 elif name.startswith("--"):
                     for scheme in (("dark",) if dark else ("light", "dark")):
                         tokens[scheme][name] = value
@@ -491,6 +511,9 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
             continue
         text, problem = strip_css_comments(element.attrs["style"])
         declarations, more = css_declarations(text) if not problem else ([], [problem])
+        for name, value in declarations:
+            if name in ("border", "outline"):
+                line_tokens.update(m.group(1) for m in CSS_VAR.finditer(value))
         for problem in more + [p for p in (css_declaration_problem(n, v, None)
                                            for n, v in declarations) if p]:
             problems.append(f"{page_path}: style attribute on <{element.tag}>: {problem}")
@@ -500,15 +523,29 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
     # An unset token makes color or background fall back to the browser's own (UA_COLORS).
     for scheme, defined in tokens.items():
         colors = {"ink": list(UA_COLORS[scheme]["ink"]), "surface": list(UA_COLORS[scheme]["surface"])}
+        if not links_colored:
+            colors["ink"] += UA_LINK_COLORS[scheme]
         for name, role in CSS_TOKENS.items():
             if role in colors and name in defined:
                 colors[role].append(defined[name])
         for ink in colors["ink"]:
             for surface in colors["surface"]:
-                if contrast(ink, surface) < MIN_CONTRAST:
+                ratio = contrast(ink, surface)
+                if ratio < MIN_TEXT_CONTRAST:
                     problems.append(f"{page_path}: in the {scheme} scheme, text color {ink} on "
-                                    f"background {surface} has contrast "
-                                    f"{contrast(ink, surface):.2f} (needs {MIN_CONTRAST})")
+                                    f"background {surface} has contrast {ratio:.2f} "
+                                    f"(needs {MIN_TEXT_CONTRAST}:1 for text)")
+        for name in sorted(line_tokens):
+            line = defined.get(name)
+            if line is None or CSS_TOKENS.get(name) not in ("ink", "surface"):
+                continue
+            for surface in colors["surface"]:
+                ratio = contrast(line, surface)
+                if ratio < MIN_NON_TEXT_CONTRAST:
+                    problems.append(f"{page_path}: in the {scheme} scheme, border or outline color "
+                                    f"{name} ({line}) on background {surface} has contrast "
+                                    f"{ratio:.2f} (needs {MIN_NON_TEXT_CONTRAST:g}:1 for "
+                                    f"non-text)")
 
 
 def shown(path: str) -> str:

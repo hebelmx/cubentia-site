@@ -530,6 +530,35 @@ class Stylesheets(PrivacyCase):
         self.assertCssFails("li { color: var(--ink, transparent); }")
         self.assertCssFails("li { color: var(--surface-raised); }")
 
+    def test_text_contrast_needs_4_5(self) -> None:
+        # #888888 on --surface #f4f5f7 is about 3.25:1: enough for the old 3:1, not for AA text.
+        self.assertCssFails(":root { --ink-muted: #888888; }", "4.5")
+        # #656d79 on #f4f5f7 is about 4.79:1 and passes.
+        self.assertEqual(self.styled(self.styles.replace("--ink-muted: #5a6370;",
+                                                         "--ink-muted: #656d79;")), [])
+
+    def test_border_and_outline_need_3_to_1(self) -> None:
+        self.assertCssFails("li { outline: 3px solid var(--surface-raised); }", "3:1")
+        self.assertCssFails("li { border: 2px solid var(--surface); }", "3:1")
+        # A token used only as a text or background color is not held to the non-text rule.
+        self.assertEqual(self.styled(self.styles + "\nli { background: var(--surface-raised); }"), [])
+
+    def test_browser_link_colors_checked_without_an_a_color_rule(self) -> None:
+        a_rule = "a {\n  color: var(--accent);\n}\n"
+        self.assertIn(a_rule, self.styles)
+        without = self.styles.replace(a_rule, "")
+        for styles in (without,
+                       without + "main a { color: var(--accent); }",
+                       without + "@media (prefers-color-scheme: dark) { a { color: var(--accent); } }"):
+            with self.subTest(styles=styles[-60:]):
+                problems = self.styled(styles)
+                self.assertTrue(any("#ee0000" in p and "4.5" in p for p in problems), problems)
+
+    def test_browser_link_colors_skipped_with_an_a_color_rule(self) -> None:
+        problems = self.styled(self.styles)
+        self.assertEqual(problems, [])
+        self.assertFalse(any(c in p for p in problems for c in ("#ee0000", "#0000ee")))
+
     def test_at_rules(self) -> None:
         for css, needle in (("@media screen { li { display: none; } }", "@media 'screen'"),
                             ("@media (prefers-color-scheme: dark) { li { display: none; } }",

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The single site check that CI and local runs share.
-# 1. self-tests for the checkers, 2. the site checker on site/, 3. the privacy-policy check
-# against the app's privacy facts, 4. Nu Html Checker (HTML and CSS).
+# 1. self-tests for the checkers, 2. the site checker on site/, 3. the accessibility structure
+# checker on site/, 4. the privacy-policy check against the app's privacy facts (it also checks
+# the contrast of the one stylesheet every page loads), 5. Nu Html Checker (HTML and CSS).
 # Needs python3, Node.js (npx) and Java 11 or later.
 #
 # PRIVACY_FACTS is the app's docs/privacy-facts.json. CI (GITHUB_ACTIONS=true) must set it to
@@ -51,6 +52,9 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 echo "==> Site checks (links, third-party resources, scripts, root paths, wording)"
 python3 scripts/check_site.py site
+
+echo "==> Accessibility structure checks (lang, title, zoom, landmarks, skip link, headings, alt, links, tabindex, stylesheet)"
+python3 scripts/check_a11y.py site
 
 echo "==> Privacy policy check (facts: ${PRIVACY_FACTS}, base: ${PRIVACY_BASE:-none})"
 python3 scripts/check_privacy.py --facts "${PRIVACY_FACTS}" "${BASE_ARGS[@]}"

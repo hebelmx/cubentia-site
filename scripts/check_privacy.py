@@ -11,12 +11,19 @@ Standard library only. Three inputs:
   developer, the contact email and the effective date;
 * the policy record, privacy-policy.json (repository root, not published). It holds the
   publisher, Play developer, contact email, effective date and textSha256, a hash of the
-  whitespace-normalized text of <main>, the (data-fact, data-value) pairs in order, the
-  <title>, the meta description and every <a href> target.
+  whitespace-normalized text of the whole page (head, header, nav, main, footer, and any text
+  after </body>), every element's tag and attributes in order, the (data-fact, data-value)
+  pairs in order, the <title>, the meta description and every <a href> target.
+
+Each supported fact value has one approved wording (APPROVED_WORDING). A statement's text must
+equal the wording for its value; a value with no approved wording fails, naming the fact. A
+statement must be a visible <p> or <li> inside <main>: no hiding attributes on it or its
+ancestors, and only attribute-free <code>, <em> or <strong> inside it.
 
 The check fails when a fact has no statement with an equal value, the page states a fact the
-file lacks, statements conflict or are empty, a marker is missing or wrong, the page holds any
-email other than the contact, or the policy text changed without a new, recorded effective date.
+file lacks, statements conflict, are empty, hidden or worded otherwise than approved, a fact
+value has no approved wording, a marker is missing or wrong, the page holds any email other
+than the contact, or the policy text changed without a new, recorded effective date.
 
 Usage:
   python3 scripts/check_privacy.py --facts FILE [--page PAGE] [--record RECORD]
@@ -54,6 +61,37 @@ DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 MAILTO = re.compile(r"mailto:([^\s\"'<>?]*)", re.I)
 SHA256 = re.compile(r"[0-9a-f]{64}")
+PACKAGE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+")
+
+# The one sentence each supported (fact, data-value) must produce, whitespace-normalized.
+# A value missing here has no approved wording yet: write it here (and on the page) first.
+APPROVED_WORDING: dict[str, dict[str, str]] = {
+    "dataLeavesDevice": {"false": "Cubentia collects no personal data and shares none. "
+                                  "Nothing you do in the app leaves your device."},
+    "account": {"false": "There is no account and no sign-in."},
+    "ads": {"false": "There are no ads."},
+    "analytics": {"false": "There is no analytics and no usage tracking."},
+    "crashReporting": {"false": "There is no crash reporting."},
+    "denylistedSdks": {"[]": "The app contains no advertising, analytics or crash-reporting "
+                             "libraries."},
+    "internetPermission": {"false": "The app has no internet permission, so it cannot send "
+                                    "anything over the network."},
+    "runtimePermissions": {"[]": "The app asks for no runtime permission. It does not use the "
+                                 "camera, microphone, location, contacts or your files."},
+    "backupAllowed": {"false": "The app does not allow backup, so your progress is not copied "
+                               "to a cloud backup or to another device."},
+    "storage": {"app-private": "Your progress is stored only on your device, in storage that "
+                               "only the app can read. Uninstalling the app removes it."},
+}
+# Facts whose value is a package name, stated in this template.
+TEMPLATE_WORDING = {
+    "applicationId": "The app this policy covers has the Android package name {value}.",
+}
+STATEMENT_TAGS = {"p", "li"}
+STATEMENT_ATTRS = {"data-fact", "data-value"}
+STATEMENT_CHILD_TAGS = {"code", "em", "strong"}
+STATEMENT_ANCESTOR_TAGS = {"html", "body", "main", "section", "article", "div", "ul", "ol"}
+STATEMENT_ANCESTOR_ATTRS = {"id", "lang", "dir"}
 
 
 def shown(path: str) -> str:
@@ -90,6 +128,14 @@ class Element:
         self.attrs = attrs
         self.start = start
         self.text = ""
+        self.parent: Element | None = None
+
+    def ancestors(self) -> list["Element"]:
+        chain, node = [], self.parent
+        while node is not None:
+            chain.append(node)
+            node = node.parent
+        return chain
 
 
 class PolicyParser(HTMLParser):
@@ -104,6 +150,7 @@ class PolicyParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         element = Element(tag, {k: (v if v is not None else "") for k, v in reversed(attrs)},
                           len(self.parts))
+        element.parent = self.stack[-1] if self.stack else None
         self.elements.append(element)
         if tag in VOID_ELEMENTS:
             return
@@ -142,6 +189,7 @@ class Page:
         parser.close()
         self.source = source
         self.elements = parser.elements
+        self.all_text = normalize("".join(parser.parts))
         body = self.first("body")
         self.text = body.text if body else normalize("".join(parser.parts))
         self.statements = [(e.attrs["data-fact"], e.attrs.get("data-value"), e.text, e)
@@ -157,12 +205,16 @@ class Page:
         main = [e for e in self.elements if e.tag == "main"]
         if len(main) != 1:
             return None
-        # Policy wording outside <main> (title, meta description) and every link target count too.
+        # Every reader-visible word counts, wherever it is (head, header, nav, main, footer, or
+        # after </body>), and so does every attribute, which can show text or hide it.
         title = self.first("title")
         descriptions = [e.attrs.get("content", "") for e in self.elements
                         if e.tag == "meta" and e.attrs.get("name", "").lower() == "description"]
         hrefs = [e.attrs["href"] for e in self.elements if e.tag == "a" and "href" in e.attrs]
-        payload = json.dumps({"main": main[0].text,
+        elements = [[e.tag, [[k, normalize(v)] for k, v in reversed(list(e.attrs.items()))]]
+                    for e in self.elements]
+        payload = json.dumps({"text": self.all_text,
+                              "elements": elements,
                               "facts": [[key, value] for key, value, _, _ in self.statements],
                               "title": title.text if title else "",
                               "description": [normalize(d) for d in descriptions],
@@ -294,6 +346,59 @@ def check_facts(page_path: str, page: Page, facts: dict[str, str], problems: lis
         elif expected not in values or len(values) > 1:
             problems.append(f"{page_path}: fact '{key}': facts file says {expected!r}, "
                             f"page says {', '.join(repr(v) for v in sorted(values))}")
+    unworded = {(key, value) for key, value in facts.items() if approved_wording(key, value) is None}
+    for key, value, text, element in page.statements:
+        if not key or value is None:
+            continue
+        wording = approved_wording(key, value)
+        if wording is None:
+            unworded.add((key, value))
+        elif text and text != wording:
+            problems.append(f"{page_path}: statement for fact '{key}' = {value!r} reads {text!r}; "
+                            f"the approved wording is {wording!r}")
+        problem = statement_visibility(element, page)
+        if problem:
+            problems.append(f"{page_path}: statement for fact '{key}' {problem}")
+    if any(e.tag == "style" for e in page.elements):
+        problems.append(f"{page_path}: the policy page may not have a <style> element "
+                        f"(it could hide statements); use the shared stylesheet")
+    for key, value in sorted(unworded):
+        problems.append(f"{page_path}: fact '{key}' = {value!r} has no approved wording yet; "
+                        f"add it to APPROVED_WORDING in scripts/check_privacy.py")
+
+
+def approved_wording(key: str, value: str) -> str | None:
+    if key in TEMPLATE_WORDING:
+        if not PACKAGE_NAME.fullmatch(value):
+            return None
+        return TEMPLATE_WORDING[key].format(value=value)
+    return APPROVED_WORDING.get(key, {}).get(value)
+
+
+def statement_visibility(element: Element, page: Page) -> str | None:
+    """Why a statement may not be what a reader sees, or None."""
+    if element.tag not in STATEMENT_TAGS:
+        return f"must be a <p> or <li>, not <{element.tag}>"
+    extra = sorted(set(element.attrs) - STATEMENT_ATTRS)
+    if extra:
+        return f"has attributes that may change what is shown: {', '.join(extra)}"
+    ancestors = element.ancestors()
+    if not any(a.tag == "main" for a in ancestors):
+        return "must be inside <main>"
+    for ancestor in ancestors:
+        if ancestor.tag not in STATEMENT_ANCESTOR_TAGS:
+            return f"is inside <{ancestor.tag}>, which may hide it"
+        extra = sorted(set(ancestor.attrs) - STATEMENT_ANCESTOR_ATTRS)
+        if extra:
+            return (f"is inside <{ancestor.tag}> with attributes that may hide it: "
+                    f"{', '.join(extra)}")
+    for other in page.elements:
+        if element in other.ancestors():
+            if other.tag not in STATEMENT_CHILD_TAGS:
+                return f"contains <{other.tag}>; only <code>, <em> and <strong> are allowed"
+            if other.attrs:
+                return f"contains <{other.tag}> with attributes: {', '.join(sorted(other.attrs))}"
+    return None
 
 
 def check_markers(page_path: str, page: Page, record: dict, problems: list[str]) -> None:

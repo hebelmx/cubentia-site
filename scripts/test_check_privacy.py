@@ -19,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from check_privacy import check_privacy, update_record  # noqa: E402
+from check_privacy import Page, check_privacy, update_record  # noqa: E402
 
 CHECKER = os.path.join(HERE, "check_privacy.py")
 CHECK_SH = os.path.join(HERE, "check.sh")
@@ -30,6 +30,8 @@ DATE_MARKER = '<time data-policy="effective-date" datetime="2026-11-13">13 Novem
 CONTACT = ('<a data-policy="contact" href="mailto:exxerpro@exxerpro.com">'
            'exxerpro@exxerpro.com</a>')
 INTERNET = '<li data-fact="internetPermission" data-value="false">'
+INTERNET_TEXT = "The app has no internet permission, so it cannot send anything over the network."
+CHANGES_TEXT = "If this policy changes, this page shows the new text and a new effective date."
 
 
 def read(path: str) -> str:
@@ -143,7 +145,7 @@ class Facts(PrivacyCase):
         self.assertFails("conflicting statements for fact 'ads'", page=page)
 
     def test_repeated_equal_statement_is_fine_for_facts(self) -> None:
-        page = self.page_with("</ul>", '<li data-fact="ads" data-value="false">No ads.</li></ul>')
+        page = self.page_with("</ul>", '<li data-fact="ads" data-value="false">There are no ads.</li></ul>')
         problems = self.assertFails(page=page)  # the text hash changed, nothing else
         self.assertTrue(all("policy text changed" in p for p in problems), problems)
 
@@ -268,7 +270,10 @@ class Record(PrivacyCase):
         page = self.page_with('data-fact="runtimePermissions" data-value="[]"',
                               'data-fact="runtimePermissions" data-value="[&quot;permiso.cámara&quot;]"')
         self.write(page=page, facts=facts)
-        self.assertFalse([p for p in self.problems() if "runtimePermissions" in p])
+        # The values match; the only complaint is that this value has no approved wording yet.
+        problems = [p for p in self.problems() if "runtimePermissions" in p]
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("has no approved wording yet", problems[0])
 
     def test_new_date_not_recorded(self) -> None:
         page = self.page_with('datetime="2026-11-13">13 November 2026', 'datetime="2026-12-01">1 December 2026')
@@ -288,6 +293,141 @@ class Record(PrivacyCase):
     def test_page_without_main(self) -> None:
         page = self.page.replace('<main id="main">', "<div>").replace("</main>", "</div>")
         self.assertFails("exactly one <main>", page=page)
+
+
+class TextOutsideMain(PrivacyCase):
+    """Every reader-visible word and every attribute is hashed, not only <main>."""
+
+    def assertTextChanged(self, page: str) -> None:
+        self.assertFails("policy text changed without a new effective date", page=page)
+
+    def test_footer_paragraph(self) -> None:
+        self.assertTextChanged(self.page_with(
+            "</footer>", "<p>Cubentia collects personal data.</p></footer>"))
+
+    def test_header_text(self) -> None:
+        self.assertTextChanged(self.page_with(
+            '<a class="wordmark" href="../">Cubentia</a>',
+            '<a class="wordmark" href="../">Cubentia collects personal data</a>'))
+
+    def test_nav_in_header(self) -> None:
+        self.assertTextChanged(self.page_with(
+            "</header>", "<nav><p>Cubentia collects personal data.</p></nav></header>"))
+
+    def test_hidden_element_in_footer(self) -> None:
+        self.assertTextChanged(self.page_with(
+            "</footer>", "<p hidden>Cubentia collects personal data.</p></footer>"))
+
+    def test_text_after_body(self) -> None:
+        self.assertTextChanged(self.page_with(
+            "</body>", "</body>Cubentia collects personal data."))
+
+    def test_attribute_only_change_outside_main(self) -> None:
+        self.assertTextChanged(self.page_with(
+            '<footer class="site-footer">',
+            '<footer class="site-footer" title="Cubentia collects personal data">'))
+
+    def test_class_change_outside_main(self) -> None:
+        self.assertTextChanged(self.page_with('<footer class="site-footer">',
+                                              '<footer class="skip-link">'))
+
+    def test_markup_split_outside_main(self) -> None:
+        self.assertTextChanged(self.page_with(
+            "<p><a href=\"../\">Cubentia home</a></p>",
+            "<p><a href=\"../\">Cubentia home</a> <span>collects</span> data</p>"))
+
+
+class Wording(PrivacyCase):
+    """Each fact value is tied to the sentence it must produce."""
+
+    def dated(self, page: str) -> dict:
+        """A record that matches the page, so only the wording can fail."""
+        return {**self.record, "textSha256": Page(page).text_sha256()}
+
+    def test_supported_value_with_contradictory_wording(self) -> None:
+        page = self.page_with(INTERNET + INTERNET_TEXT,
+                              INTERNET + "The app has internet permission and sends data.")
+        self.assertFails("statement for fact 'internetPermission'", "approved wording",
+                         page=page, record=self.dated(page))
+
+    def test_true_value_without_approved_wording(self) -> None:
+        # Facts file and data-value agree on true, the record is dated, the text still says no.
+        page = self.page_with(INTERNET, '<li data-fact="internetPermission" data-value="true">')
+        problems = self.assertFails("fact 'internetPermission' = 'true' has no approved wording",
+                                    page=page, record=self.dated(page),
+                                    facts={**self.facts, "internetPermission": True})
+        self.assertTrue(all("internetPermission" in p for p in problems), problems)
+
+    def test_fact_file_value_without_wording_is_named(self) -> None:
+        self.assertFails("fact 'ads' = 'true' has no approved wording",
+                         facts={**self.facts, "ads": True})
+
+    def test_appended_contradiction_inside_statement(self) -> None:
+        page = self.page_with(INTERNET_TEXT, INTERNET_TEXT + " Just kidding, it has one.")
+        self.assertFails("statement for fact 'internetPermission'", "approved wording",
+                         page=page, record=self.dated(page))
+
+    def test_whitespace_and_plain_inline_markup_are_fine(self) -> None:
+        page = self.page_with(INTERNET_TEXT, "The app has  no\n  <em>internet</em> permission, "
+                              "so it cannot send anything over the network.")
+        self.assertPasses(page=page, record=self.dated(page))
+
+    def test_hidden_word_inside_statement(self) -> None:
+        page = self.page_with(INTERNET_TEXT, "The app has <span hidden>no </span>internet "
+                              "permission, so it cannot send anything over the network.")
+        self.assertFails("contains <span>", page=page, record=self.dated(page))
+
+    def test_attribute_on_inline_markup_inside_statement(self) -> None:
+        page = self.page_with(INTERNET_TEXT, "The app has <em class=\"skip-link\">no</em> internet "
+                              "permission, so it cannot send anything over the network.")
+        self.assertFails("contains <em> with attributes: class", page=page, record=self.dated(page))
+
+    def test_hidden_statement(self) -> None:
+        page = self.page_with(INTERNET, '<li data-fact="internetPermission" data-value="false" hidden>')
+        self.assertFails("attributes that may change what is shown: hidden",
+                         page=page, record=self.dated(page))
+
+    def test_styled_or_classed_statement(self) -> None:
+        for extra in ('style="display:none"', 'class="skip-link"', 'aria-hidden="true"'):
+            with self.subTest(extra=extra):
+                page = self.page_with(INTERNET, INTERNET[:-1] + " " + extra + ">")
+                self.assertFails("attributes that may change what is shown",
+                                 page=page, record=self.dated(page))
+
+    def test_statement_in_hidden_ancestor(self) -> None:
+        start = INTERNET + INTERNET_TEXT + "</li>"
+        page = self.page_with(start, f"</ul><div hidden><ul>{start}</ul></div><ul>")
+        self.assertFails("inside <div> with attributes that may hide it: hidden",
+                         page=page, record=self.dated(page))
+
+    def test_statement_in_template_or_details(self) -> None:
+        start = INTERNET + INTERNET_TEXT + "</li>"
+        for tag in ("template", "noscript", "details"):
+            with self.subTest(tag=tag):
+                page = self.page_with(start, f"</ul><{tag}><ul>{start}</ul></{tag}><ul>")
+                self.assertFails(f"is inside <{tag}>", page=page, record=self.dated(page))
+
+    def test_statement_outside_main(self) -> None:
+        start = INTERNET + INTERNET_TEXT + "</li>"
+        page = self.page_with(start, "").replace(
+            "</footer>", f"<ul>{start}</ul></footer>")
+        self.assertFails("must be inside <main>", page=page, record=self.dated(page))
+
+    def test_statement_on_another_element(self) -> None:
+        page = self.page_with(INTERNET + INTERNET_TEXT + "</li>",
+                              '<li><span data-fact="internetPermission" data-value="false">'
+                              + INTERNET_TEXT + "</span></li>")
+        self.assertFails("must be a <p> or <li>", page=page, record=self.dated(page))
+
+    def test_inline_style_element(self) -> None:
+        page = self.page_with("</head>", "<style>li { display: none; }</style></head>")
+        self.assertFails("may not have a <style> element", page=page, record=self.dated(page))
+
+    def test_application_id_wording_follows_the_value(self) -> None:
+        page = self.page_with('data-value="com.exxerpro.cubentia"', 'data-value="com.example.other"')
+        self.assertFails("statement for fact 'applicationId'", "com.example.other",
+                         page=page, record=self.dated(page),
+                         facts={**self.facts, "applicationId": "com.example.other"})
 
 
 class BadFacts(PrivacyCase):
@@ -317,7 +457,7 @@ class BadFacts(PrivacyCase):
 class Update(PrivacyCase):
     def test_later_date_rewrites_the_record(self) -> None:
         page = self.page_with('datetime="2026-11-13">13 November 2026', 'datetime="2026-12-01">1 December 2026')
-        page = page.replace("There are no ads.", "There are never any ads.")
+        page = page.replace(CHANGES_TEXT, "When this policy changes, this page shows a new date.")
         self.write(page=page)
         ok, messages = update_record(self.page_path, self.record_path)
         self.assertTrue(ok, messages)

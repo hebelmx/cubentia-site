@@ -14,7 +14,7 @@ The site is plain static HTML and one CSS file. It has no JavaScript, no cookies
 
 - **Never rename this repository.** A GitHub Pages project URL contains the repository name, and GitHub does not redirect Pages URLs after a rename. Renaming `cubentia-site` would break the privacy-policy URL registered in Play Console.
 - **Do not call it `cubentia`.** The app repository will be renamed to `cubentia`, and repository names are case-insensitive, so the two would collide. The app repository can be renamed without affecting this site.
-- **No personal data in this repository.** No tester names, emails, group addresses or opt-in links, in files, commits, issues or pull requests. ExxerPro is named as the publisher.
+- **No tester or pilot data in this repository.** No tester names, emails, group addresses or opt-in links, in files, commit messages, issues or pull requests. ExxerPro is named as the publisher, and the published contact address is the only email on the site. The maintainer's own git author identity, which is the same as in the app repository, is not covered by this rule.
 - **Nothing from another origin.** Every `src`, `<link href>`, CSS `url()` and `@import` is same-origin. Links (`<a href>`) to other sites are fine. Fonts use a system font stack; IBM Plex Sans is used only if already installed.
 - **Paths under `/cubentia-site/`.** Pages at fixed paths use relative links. `404.html` is served at any missing path, so it uses absolute `/cubentia-site/...` paths. A root-relative path outside `/cubentia-site/` fails the check.
 - Use LF line endings and Conventional Commits.

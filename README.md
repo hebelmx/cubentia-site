@@ -1,6 +1,6 @@
 # cubentia-site
 
-Public website and privacy policy for Cubentia, an offline Android cube tutor published by ExxerPro.
+Public website and privacy policy for Cubentia, an offline Android cube tutor from Exxerpro Solutions, S.A. de C.V. (published on Google Play as Abel Briones).
 
 The site is plain static HTML and one CSS file. It has no JavaScript, no cookies, no tracking and no resource from another origin. GitHub Pages publishes it from GitHub Actions.
 
@@ -14,7 +14,7 @@ The site is plain static HTML and one CSS file. It has no JavaScript, no cookies
 
 - **Never rename this repository.** A GitHub Pages project URL contains the repository name, and GitHub does not redirect Pages URLs after a rename. Renaming `cubentia-site` would break the privacy-policy URL registered in Play Console.
 - **Do not call it `cubentia`.** The app repository will be renamed to `cubentia`, and repository names are case-insensitive, so the two would collide. The app repository can be renamed without affecting this site.
-- **No tester or pilot data in this repository.** No tester names, emails, group addresses or opt-in links, in files, commit messages, issues or pull requests. ExxerPro is named as the publisher, and the published contact address is the only email on the site. The maintainer's own git author identity, which is the same as in the app repository, is not covered by this rule.
+- **No tester or pilot data in this repository.** No tester names, emails, group addresses or opt-in links, in files, commit messages, issues or pull requests. Exxerpro Solutions, S.A. de C.V. (published on Google Play as Abel Briones) is named as the publisher, and the published contact address is the only email on the site. The maintainer's own git author identity, which is the same as in the app repository, is not covered by this rule.
 - **Nothing from another origin.** Every `src`, `<link href>`, CSS `url()` and `@import` is same-origin. Links (`<a href>`) to other sites are fine. Fonts use a system font stack; IBM Plex Sans is used only if already installed.
 - **Deny by default.** `scripts/check_site.py` accepts only allowlisted elements, attributes, `<link rel>` values (stylesheet, icon, canonical, manifest), CSS at-rules, CSS functions and file types. CSS may not generate text (`content` is only `none`, `normal` or `""`), and `<base>`, `<meta http-equiv>`, scripts and embeds are rejected. If a new page needs something that is refused, narrow the rule in the checker and add a test.
 - **Paths under `/cubentia-site/`.** Pages at fixed paths use relative links. `404.html` is served at any missing path, so it uses absolute `/cubentia-site/...` paths. A root-relative path outside `/cubentia-site/` fails the check.
@@ -26,12 +26,15 @@ The site is plain static HTML and one CSS file. It has no JavaScript, no cookies
 site/                  published as-is
   index.html           landing page
   privacy/index.html   privacy policy (statements checked against the app's privacy facts)
+  support/index.html   support page: the contact email for help and problem reports
   404.html             custom "Page not found" page
   styles.css           the one stylesheet (design tokens, light and dark)
 scripts/
   check.sh             the check CI runs; run it locally before a PR
   check_site.py        link, third-party, script/cookie, root-path and wording checks (stdlib Python)
   test_check_site.py   self-tests for check_site.py
+  check_a11y.py        accessibility structure checks on every page (stdlib Python)
+  test_check_a11y.py   self-tests for check_a11y.py
   check_privacy.py     privacy-policy check against the app's facts and the policy record
   test_check_privacy.py  self-tests for check_privacy.py
   fixtures/privacy-facts.json  copy of the app's v1.0 facts, the local default
@@ -49,7 +52,9 @@ Needs Python 3, Node.js (for `npx`) and Java 11 or later.
 bash scripts/check.sh
 ```
 
-It runs the checkers' self-tests, then `scripts/check_site.py site`, then `scripts/check_privacy.py` (below), then the Nu Html Checker (`vnu-jar`, version pinned in `check.sh`) on the HTML and CSS. It exits non-zero on any problem. `check_site.py` and `check_privacy.py` print each problem as `file: message`; the Nu Html Checker uses its own format.
+It runs the checkers' self-tests, then `scripts/check_site.py site`, then `scripts/check_a11y.py site`, then `scripts/check_privacy.py` (below), then the Nu Html Checker (`vnu-jar`, version pinned in `check.sh`) on the HTML and CSS. It exits non-zero on any problem. `check_site.py`, `check_a11y.py` and `check_privacy.py` print each problem as `file: message`; the Nu Html Checker uses its own format.
+
+`check_a11y.py` checks the structure of every page for WCAG 2.2 AA: `<html lang="en">`, a non-empty title, a viewport that allows zoom, one `header`, `main id="main"` and `footer`, a skip link as the first focusable element, one `h1` with heading levels that never skip, `alt` on every image, an `href` and text on every link, no `tabindex` other than `0` or `-1`, exactly one stylesheet, `styles.css`, and no `<style>` element or `style=""` attribute, so all of each page's CSS is in the stylesheet the contrast check reads. No text may take its color from anywhere else (deny by default): on every page (`.html`, `.htm`, `.xhtml`) only the elements `check_site.py` allows and SVG elements that cannot render text are accepted, so SVG `text`, `tspan`, `textPath`, `foreignObject`, MathML and the like fail, as do the legacy color attributes (`color`, `bgcolor`, `text`, `link`, `vlink`, `alink`), `placeholder` and `data:` URLs other than raster images. Every `.svg` file may hold only SVG elements that cannot render text. Keyboard flow, 200% zoom, 320 CSS px reflow and the rendered light and dark themes are checked by hand and recorded in the pull request.
 
 `PRIVACY_BASE` names the git revision the privacy check compares the policy with (see [Changing the policy](#changing-the-policy)); it must be set on CI and is optional locally.
 
@@ -67,7 +72,7 @@ The app's build exports what it can prove about privacy to `docs/privacy-facts.j
 - The check fails when a fact has no statement with an equal value, when the page states a fact the file lacks, when statements conflict or are empty, or when the file is missing, invalid or has another `schemaVersion`.
 - `data-policy` markers name the publisher, the Play developer, the contact (`<a href="mailto:…">`) and the effective date (`<time datetime="YYYY-MM-DD">`). They must match `privacy-policy.json`, and the contact must be the only email on the page.
 - Each supported fact value has one approved sentence (`APPROVED_WORDING` in `scripts/check_privacy.py`), and the statement's text must equal it (whitespace is normalized). A value with no approved sentence yet, such as `internetPermission: true`, fails with an error naming the fact: add the sentence to `APPROVED_WORDING` and the page together. A statement must be a `<p>` or `<li>` inside `<main>`, with no attribute besides `data-fact` and `data-value`, no hiding element or attribute around it (only `id`, `lang`, `dir` on `div`, `section`, `article`, `ul`, `ol`, `main`), and only attribute-free `<code>`, `<em>` or `<strong>` inside it. The page may not have a `<style>` or `<base>` element.
-- Every stylesheet the policy page loads (each `<link rel="stylesheet">`, then each `@import`, as plain relative `.css` paths) and every `style=""` attribute on it may hold only allowlisted CSS (`CSS_PROPERTIES` and `CSS_TOKENS` in `scripts/check_privacy.py`), whatever the selector, so no rule can hide a statement: no `display: none`, `visibility`, `opacity`, positioning, `transform`, `clip`, `width`/`height`, `overflow`, `text-indent`, `content`, or font sizes under `0.875rem`. Colors are only the design tokens, set on `:root` (and overridden only in `@media (prefers-color-scheme: dark)`), and every text color must contrast with every background in both schemes. CSS escapes, `!important`, nested rules and other at-rules are refused. Because the page loads `site/styles.css`, this applies to the whole site's stylesheet; the skip link is therefore always shown rather than moved off-screen. To use new CSS, add it to the allowlist with a test.
+- Every stylesheet the policy page loads (each `<link rel="stylesheet">`, then each `@import`, as plain relative `.css` paths) and every `style=""` attribute on it may hold only allowlisted CSS (`CSS_PROPERTIES` and `CSS_TOKENS` in `scripts/check_privacy.py`), whatever the selector, so no rule can hide a statement: no `display: none`, `visibility`, `opacity`, positioning, `transform`, `clip`, `width`/`height`, `overflow`, `text-indent`, `content`, or font sizes under `0.875rem`. Colors are only the design tokens, set on `:root` (and overridden only in `@media (prefers-color-scheme: dark)`), and in both schemes every text color (the ink tokens and the browser's default text colors) must reach 4.5:1 against every background, and every color token used in a `border` or `outline` must reach 3:1 (WCAG 1.4.11). The browser's default link colors are checked only when no rule with selector `a` sets `color`. CSS escapes, `!important`, nested rules and other at-rules are refused. Because the page loads `site/styles.css`, this applies to the whole site's stylesheet; the skip link is therefore always shown rather than moved off-screen. To use new CSS, add it to the allowlist with a test.
 - `privacy-policy.json` records the effective date and a hash of all the page's text (head, header, nav, main, footer), every element's tag and attributes, the facts, the `<title>`, the meta description, every link target and the full text of every stylesheet the page loads. Changing any of it, a class or a line of `site/styles.css` included, without a new effective date fails.
 
 ### Changing the policy
@@ -111,7 +116,7 @@ A pull request or a scheduled run runs `check` only: no artifact is uploaded and
 
 ## Licence
 
-- Code (HTML and CSS markup, workflows, scripts): MIT, Copyright (c) 2026 ExxerPro.
-- Site content (text, logo, screenshots, the Cubentia name and branding): © 2026 ExxerPro, all rights reserved.
+- Code (HTML and CSS markup, workflows, scripts): MIT, Copyright (c) 2026 Exxerpro Solutions, S.A. de C.V.
+- Site content (text, logo, screenshots, the Cubentia name and branding): © 2026 Exxerpro Solutions, S.A. de C.V., all rights reserved.
 
 See [LICENSE](LICENSE).

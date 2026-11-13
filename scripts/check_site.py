@@ -14,7 +14,10 @@ Standard library only. HTML validation is done separately by the Nu Html Checker
 * .html, .htm, .xhtml and .svg files (any case) all get these page checks;
 * root-relative paths stay inside the GitHub Pages project path /cubentia-site/;
 * 404.html, which is served at any missing path, uses only absolute site paths;
-* the word "Rubik" never appears in page text (URLs are exempt).
+* no SVG animation (<set>, <animate>, ...) and no attributeName: SMIL can assign URLs;
+* the word "Rubik" never appears in page text (URLs are exempt). Text is checked as one
+  concatenated string across elements, with invisible format characters (soft hyphen,
+  zero-width characters, ...) removed, so markup or Cf characters cannot split the word.
 
 Usage: python3 scripts/check_site.py [SITE_DIR]   (default: site)
 Prints each problem as "file: message" and exits 1 if there is any; prints "OK" otherwise.
@@ -26,6 +29,7 @@ import os
 import posixpath
 import re
 import sys
+import unicodedata
 from html.parser import HTMLParser
 from urllib.parse import unquote, urlsplit
 
@@ -39,6 +43,8 @@ TEXT_ATTRS = {
     "title", "alt", "aria-label", "placeholder", "aria-description",
     "value", "label", "aria-roledescription", "abbr",
 }
+# SVG animation (SMIL) elements: they can set href/src and other attributes to any URL.
+SVG_ANIMATION_ELEMENTS = {"set", "animate", "animatemotion", "animatetransform", "animatecolor"}
 # Elements whose content is not page text.
 NON_TEXT_ELEMENTS = {"style", "script"}
 
@@ -101,8 +107,18 @@ def css_image_set_strings(css: str) -> list[str]:
     return found
 
 
+def strip_invisible(text: str) -> str:
+    """Remove characters that render as nothing: format (Cf) characters and U+034F."""
+    return "".join(c for c in text if c != "\u034f" and unicodedata.category(c) != "Cf")
+
+
+def mask_urls(text: str) -> str:
+    """Drop invisible characters, then replace URLs (exempt from the wording rule) with a space."""
+    return URL_IN_TEXT.sub(" ", strip_invisible(text))
+
+
 def contains_rubik(text: str) -> bool:
-    return bool(RUBIK.search(URL_IN_TEXT.sub(" ", text)))
+    return bool(RUBIK.search(mask_urls(text)))
 
 
 class PageParser(HTMLParser):
@@ -117,6 +133,16 @@ class PageParser(HTMLParser):
         self.problems: list[str] = []
         self._skip_depth = 0
         self._style_buffer: list[str] | None = None
+        # Visible text, URLs masked per text node, joined with no separator on close().
+        self._text_parts: list[str] = []
+
+    def close(self) -> None:
+        super().close()
+        text = "".join(self._text_parts)
+        match = RUBIK.search(text)
+        if match:
+            snippet = " ".join(text[max(0, match.start() - 30):match.end() + 30].split())
+            self.problems.append(f'"Rubik" in page text: {snippet!r}')
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._start(tag, attrs)
@@ -134,6 +160,10 @@ class PageParser(HTMLParser):
             self.problems.append("<script> is not allowed")
         if tag in {"iframe", "embed", "object", "frame"}:
             self.problems.append(f"<{tag}> embeds are not allowed")
+        if tag in SVG_ANIMATION_ELEMENTS:
+            self.problems.append(f"SVG animation <{tag}> is not allowed")
+        if "attributename" in values:
+            self.problems.append(f"attributeName on <{tag}> is not allowed (SVG animation)")
         for name, value in values.items():
             if name.startswith("on"):
                 self.problems.append(f'event-handler attribute {name}="..." on <{tag}> is not allowed')
@@ -182,8 +212,7 @@ class PageParser(HTMLParser):
             return
         if self._skip_depth:
             return
-        if contains_rubik(data):
-            self.problems.append(f'"Rubik" in page text: {data.strip()[:60]!r}')
+        self._text_parts.append(mask_urls(data))
 
 
 class SiteChecker:

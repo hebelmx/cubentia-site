@@ -288,6 +288,23 @@ class ThirdPartyResources(SiteCase):
                '<image xlink:href="https://x.com/a.png"/></svg>')
         self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "third-party")
 
+    def test_svg_set_href_in_svg_file_fails(self) -> None:
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg"><image width="1" height="1">'
+               '<set attributeName="href" to="https://example.com/tracker.svg"/></image></svg>')
+        self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "SVG animation <set>")
+
+    def test_svg_animation_elements_inline_fail(self) -> None:
+        for tag in ("set", "animate", "animateMotion", "animateTransform"):
+            with self.subTest(tag=tag):
+                body = (f'<svg width="1" height="1"><image width="1" height="1">'
+                        f'<{tag} attributeName="href" values="https://x.com/a.svg"/></image></svg>')
+                self.assertFails(self.build(body=body), "index.html", f"SVG animation <{tag.lower()}>")
+
+    def test_attribute_name_on_any_element_fails(self) -> None:
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg">'
+               '<rect attributeName="xlink:href" from="a" to="https://x.com/a.svg"/></svg>')
+        self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "attributeName")
+
     def test_iframe_fails(self) -> None:
         self.assertFails(self.build(body='<iframe src="https://x.com/" title="x"></iframe>'), "<iframe>")
 
@@ -405,6 +422,39 @@ class RubikText(SiteCase):
         for attr in ("value", "label", "aria-roledescription", "abbr"):
             with self.subTest(attr=attr):
                 self.assertFails(self.build(body=f'<p {attr}="Rubik">x</p>'), attr)
+
+    def test_rubik_split_by_inline_markup_fails(self) -> None:
+        self.assertFails(self.build(body="<p>Ru<span>bik</span></p>"), "Rubik", "page text")
+
+    def test_rubik_split_by_nested_markup_and_comment_fails(self) -> None:
+        self.assertFails(self.build(body="<p>R<b>u<i>b</i></b><!-- x -->ik cube</p>"), "Rubik")
+
+    def test_rubik_split_by_invisible_characters_fails(self) -> None:
+        for char in ("\u00ad", "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
+            with self.subTest(char=hex(ord(char))):
+                self.assertFails(self.build(body=f"<p>Ru{char}bik</p>"), "Rubik")
+
+    def test_rubik_split_by_character_references_fails(self) -> None:
+        self.assertFails(self.build(body="<p>Ru&shy;b&#x200B;&#105;k</p>"), "Rubik")
+
+    def test_rubik_with_character_references_in_attributes_fails(self) -> None:
+        for attr in ("title", "alt", "aria-label"):
+            with self.subTest(attr=attr):
+                self.assertFails(self.build(body=f'<p {attr}="Ru&shy;b&#8203;ik">x</p>'), attr)
+
+    def test_rubik_split_in_title_and_meta_description_fails(self) -> None:
+        site = self.build(head='<meta name="description" content="A R&#x75;&#xAD;bik tutor">')
+        self.assertFails(site, "meta")
+        site = self.build()
+        path = os.path.join(site, "index.html")
+        with open(path, encoding="utf-8") as handle:
+            content = handle.read().replace("<title>Cubentia</title>", "<title>Ru&#8288;bik tutor</title>")
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        self.assertFails(site, "Rubik")
+
+    def test_rubik_after_url_in_separate_element_fails(self) -> None:
+        self.assertFails(self.build(body="<p>see x.com/</p><p>Rubik cube</p>"), "Rubik")
 
     def test_rubik_in_href_passes(self) -> None:
         self.assertPasses(self.build(body='<a href="https://github.com/hebelmx/RubikXplorer/issues">Issues</a>'))

@@ -12,6 +12,11 @@ set -euo pipefail
 VNU_VERSION="26.10.12"
 FIXTURE_FACTS="scripts/fixtures/privacy-facts.json"
 
+# A relative PRIVACY_FACTS is relative to the caller's directory, not the repo root.
+if [[ -n "${PRIVACY_FACTS:-}" && "${PRIVACY_FACTS}" != /* ]]; then
+  PRIVACY_FACTS="${PWD}/${PRIVACY_FACTS}"
+fi
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 if [[ -n "${PRIVACY_FACTS:-}" ]]; then

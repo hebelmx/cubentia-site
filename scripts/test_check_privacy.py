@@ -238,15 +238,44 @@ class Record(PrivacyCase):
         self.assertFails("policy text changed without a new effective date", page=page)
 
     def test_value_change_counts_as_text_change(self) -> None:
-        record = {**self.record, "textSha256": "0" * 64}
-        self.assertFails("policy text changed without a new effective date", record=record)
+        # Only a data-value changes (the facts file agrees), the visible text stays the same.
+        page = self.page_with('data-fact="applicationId" data-value="com.exxerpro.cubentia"',
+                              'data-fact="applicationId" data-value="com.exxerpro.other"')
+        facts = {**self.facts, "applicationId": "com.exxerpro.other"}
+        self.assertFails("policy text changed without a new effective date", page=page, facts=facts)
+
+    def test_description_change_counts_as_text_change(self) -> None:
+        page = self.page_with("Read the full privacy policy", "Read the whole privacy policy")
+        self.assertFails("policy text changed without a new effective date", page=page)
+
+    def test_title_change_counts_as_text_change(self) -> None:
+        page = self.page_with("<title>Privacy policy · Cubentia</title>",
+                              "<title>Privacy · Cubentia</title>")
+        self.assertFails("policy text changed without a new effective date", page=page)
+
+    def test_link_target_change_counts_as_text_change(self) -> None:
+        page = self.page_with("privacy-policies/github-general-privacy-statement",
+                              "privacy-policies/github-privacy-statement")
+        self.assertFails("policy text changed without a new effective date", page=page)
+
+    def test_effective_date_text_must_match_datetime(self) -> None:
+        page = self.page_with(DATE_MARKER, DATE_MARKER.replace('datetime="2026-11-13"',
+                                                               'datetime="2026-11-20"'))
+        self.assertFails("effective date marker reads '13 November 2026'", page=page)
+
+    def test_non_ascii_list_fact_matches(self) -> None:
+        facts = {**self.facts, "runtimePermissions": ["permiso.cámara"]}
+        page = self.page_with('data-fact="runtimePermissions" data-value="[]"',
+                              'data-fact="runtimePermissions" data-value="[&quot;permiso.cámara&quot;]"')
+        self.write(page=page, facts=facts)
+        self.assertFalse([p for p in self.problems() if "runtimePermissions" in p])
 
     def test_new_date_not_recorded(self) -> None:
-        page = self.page_with('datetime="2026-11-13"', 'datetime="2026-12-01"')
+        page = self.page_with('datetime="2026-11-13">13 November 2026', 'datetime="2026-12-01">1 December 2026')
         self.assertFails("is not recorded", "--update", page=page)
 
     def test_date_earlier_than_record(self) -> None:
-        page = self.page_with('datetime="2026-11-13"', 'datetime="2026-11-01"')
+        page = self.page_with('datetime="2026-11-13">13 November 2026', 'datetime="2026-11-01">1 November 2026')
         self.assertFails("earlier than the recorded 2026-11-13", page=page)
 
     def test_record_missing(self) -> None:
@@ -318,7 +347,7 @@ class Update(PrivacyCase):
                 "--record", self.record_path]
         refused = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(refused.returncode, 1)
-        self.write(page=self.page_with('datetime="2026-11-13"', 'datetime="2026-12-01"'))
+        self.write(page=self.page_with('datetime="2026-11-13">13 November 2026', 'datetime="2026-12-01">1 December 2026'))
         updated = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
 
@@ -326,10 +355,16 @@ class Update(PrivacyCase):
 class CheckScriptOnCi(unittest.TestCase):
     """check.sh resolves PRIVACY_FACTS before anything else, so these runs stop at once."""
 
-    def run_check(self, **env: str) -> subprocess.CompletedProcess[str]:
+    def run_check(self, cwd: str | None = None, **env: str) -> subprocess.CompletedProcess[str]:
         clean = {k: v for k, v in os.environ.items() if k not in ("PRIVACY_FACTS", "GITHUB_ACTIONS")}
         return subprocess.run(["bash", CHECK_SH], capture_output=True, text=True,
-                              env={**clean, **env}, timeout=60)
+                              env={**clean, **env}, timeout=60, cwd=cwd)
+
+    def test_relative_privacy_facts_resolves_from_the_callers_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as caller:
+            result = self.run_check(cwd=caller, GITHUB_ACTIONS="true", PRIVACY_FACTS="missing.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(os.path.join(caller, "missing.json"), result.stderr)
 
     def test_ci_without_privacy_facts_fails(self) -> None:
         result = self.run_check(GITHUB_ACTIONS="true")

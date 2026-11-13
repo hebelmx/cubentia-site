@@ -69,7 +69,7 @@ def fact_value(value: object) -> str:
     """The data-value spelling of a fact: the raw string, or compact JSON."""
     if isinstance(value, str):
         return value
-    return json.dumps(value, separators=(",", ":"))
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
 def parse_date(value: str) -> datetime.date | None:
@@ -156,8 +156,16 @@ class Page:
         main = [e for e in self.elements if e.tag == "main"]
         if len(main) != 1:
             return None
+        # Policy wording outside <main> (title, meta description) and every link target count too.
+        title = self.first("title")
+        descriptions = [e.attrs.get("content", "") for e in self.elements
+                        if e.tag == "meta" and e.attrs.get("name", "").lower() == "description"]
+        hrefs = [e.attrs["href"] for e in self.elements if e.tag == "a" and "href" in e.attrs]
         payload = json.dumps({"main": main[0].text,
-                              "facts": [[key, value] for key, value, _, _ in self.statements]},
+                              "facts": [[key, value] for key, value, _, _ in self.statements],
+                              "title": title.text if title else "",
+                              "description": [normalize(d) for d in descriptions],
+                              "hrefs": hrefs},
                              ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -176,6 +184,11 @@ class Page:
             return None, f"effective date marker has an invalid datetime {value!r} (want YYYY-MM-DD)"
         if not marker.text:
             return None, "effective date marker has no text"
+        date = parse_date(value)
+        shown_date = f"{date.day} {date.strftime('%B %Y')}"
+        if marker.text != shown_date:
+            return None, (f"effective date marker reads {marker.text!r} but its datetime is "
+                          f"{value} (expected the text {shown_date!r})")
         return value, None
 
     def single_text(self, name: str) -> tuple[str | None, str | None]:

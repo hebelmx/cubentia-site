@@ -64,16 +64,18 @@ The app's build exports what it can prove about privacy to `docs/privacy-facts.j
 - Every key except `schemaVersion` is a fact. The page states each one on an element with `data-fact="<key>"`, `data-value="<value>"` and plain-language text. `<value>` is the raw string for a JSON string and compact JSON otherwise (`false`, `[]`). `schemaVersion` must be `1`.
 - The check fails when a fact has no statement with an equal value, when the page states a fact the file lacks, when statements conflict or are empty, or when the file is missing, invalid or has another `schemaVersion`.
 - `data-policy` markers name the publisher, the Play developer, the contact (`<a href="mailto:…">`) and the effective date (`<time datetime="YYYY-MM-DD">`). They must match `privacy-policy.json`, and the contact must be the only email on the page.
-- `privacy-policy.json` records the effective date and a hash of the text of `<main>` plus the facts. Changing the text without a new effective date fails.
+- `privacy-policy.json` records the effective date and a hash of the text of `<main>`, the facts, the `<title>`, the meta description and every link target. Changing the text without a new effective date fails.
 
 ### Changing the policy
 
 1. Edit `site/privacy/index.html`.
-2. Set a new, later effective date in the `<time data-policy="effective-date" datetime="…">` marker and its visible text.
+2. Set a new, later effective date in the `<time data-policy="effective-date" datetime="…">` marker and its visible text, written as `13 November 2026` (the check requires the text to match the `datetime`).
 3. Run `python3 scripts/check_privacy.py --update`. It rewrites `effectiveDate` and `textSha256` in `privacy-policy.json`, and refuses unless the page's date is later than the recorded one.
 4. Run `bash scripts/check.sh` and commit the page and the record together.
 
 When the app's facts change, the daily scheduled run fails until the page states the new facts (and gets a new date).
+
+GitHub disables scheduled workflows in a public repository after 60 days without repository activity, and emails the failure of a scheduled run only to the user who last changed the `cron` line. If the Actions tab shows the Pages workflow as disabled, re-enable it there. Pull requests and pushes run the same facts check, so drift is also caught on the next change.
 
 ## Preview locally
 

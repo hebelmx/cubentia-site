@@ -222,6 +222,67 @@ class ThirdPartyResources(SiteCase):
     def test_img_data_uri_passes(self) -> None:
         self.assertPasses(self.build(body='<img src="data:image/png;base64,iVBORw0KGgo=" alt="Dot">'))
 
+    def test_css_data_image_url_passes(self) -> None:
+        self.assertPasses(self.build(css_extra='body { background: url("data:image/svg+xml,%3Csvg%3E"); }'))
+
+    def test_data_stylesheet_link_fails(self) -> None:
+        self.assertFails(self.build(head='<link rel="stylesheet" '
+                                         'href="data:text/css,@import url(https://example.com/x.css)">'),
+                         "index.html", "non-image data:")
+
+    def test_data_stylesheet_link_uppercase_with_params_fails(self) -> None:
+        self.assertFails(self.build(head='<link rel="stylesheet" href=" DATA:Text/CSS;charset=utf-8,a{}">'),
+                         "non-image data:")
+
+    def test_data_url_without_media_type_fails(self) -> None:
+        self.assertFails(self.build(head='<link rel="stylesheet" href="data:,a{}">'), "non-image data:")
+
+    def test_data_html_form_action_fails(self) -> None:
+        self.assertFails(self.build(body='<form action="data:text/html,<img src=//x.com/a>"><button>Go</button></form>'),
+                         "non-image data:")
+
+    def test_css_import_data_url_fails(self) -> None:
+        self.assertFails(self.build(css_extra='@import url("data:text/css,@import url(https://x.com/a.css)");'),
+                         "styles.css", "non-image data:")
+
+    def test_css_import_data_string_fails(self) -> None:
+        self.assertFails(self.build(css_extra="@import 'data:text/css,a{}';"), "styles.css", "non-image data:")
+
+    def test_css_hex_escaped_url_fails(self) -> None:
+        self.assertFails(self.build(css_extra=r"body { background-image: u\72l(https://example.com/tracker.png); }"),
+                         "styles.css", "third-party", "https://example.com/tracker.png")
+
+    def test_css_hex_escape_with_trailing_space_fails(self) -> None:
+        self.assertFails(self.build(css_extra="body { background: \\75 rl(https://x.com/a.png); }"),
+                         "styles.css", "third-party")
+
+    def test_css_escaped_literal_url_fails(self) -> None:
+        self.assertFails(self.build(css_extra=r"body { background: u\r\l(https\:\/\/x.com/a.png); }"),
+                         "styles.css", "third-party", "https://x.com/a.png")
+
+    def test_css_escaped_import_fails(self) -> None:
+        self.assertFails(self.build(css_extra=r'@\69mport "https://x.com/a.css";'), "styles.css", "third-party")
+
+    def test_css_escaped_image_set_fails(self) -> None:
+        self.assertFails(self.build(css_extra=r'body { background-image: \69mage-set("https://x.com/a.png" 1x); }'),
+                         "styles.css", "third-party")
+
+    def test_css_comment_inside_function_name_is_removed(self) -> None:
+        self.assertFails(self.build(css_extra="body { background: u/**/rl(https://x.com/a.png); }"),
+                         "styles.css", "third-party")
+
+    def test_css_escaped_url_in_style_attribute_fails(self) -> None:
+        self.assertFails(self.build(body=r'<p style="background:u\72l(https://x.com/a.png)">x</p>'),
+                         "index.html", "third-party")
+
+    def test_css_escaped_import_in_style_element_fails(self) -> None:
+        self.assertFails(self.build(head=r'<style>@\69 mport url("https://x.com/a.css");</style>'),
+                         "index.html", "third-party")
+
+    def test_css_escaped_whitespace_keeps_url_detected(self) -> None:
+        self.assertFails(self.build(css_extra=r"body { background: url(https://x.com/a\20 b.png); }"),
+                         "styles.css", "third-party")
+
     def test_svg_external_xlink_href_fails(self) -> None:
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
                '<image xlink:href="https://x.com/a.png"/></svg>')
@@ -265,6 +326,29 @@ class ScriptsAndCookies(SiteCase):
 
     def test_set_cookie_meta_fails(self) -> None:
         self.assertFails(self.build(head='<meta http-equiv="Set-Cookie" content="a=b">'), "set-cookie")
+
+
+class RequiredPages(SiteCase):
+    def test_missing_index_fails(self) -> None:
+        site = self.build()
+        os.remove(os.path.join(site, "index.html"))
+        self.assertFails(site, "index.html: required page does not exist")
+
+    def test_missing_404_fails(self) -> None:
+        site = self.build()
+        os.remove(os.path.join(site, "404.html"))
+        self.assertFails(site, "404.html: required page does not exist")
+
+    def test_empty_site_directory_fails(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        problems = self.assertFails(tmp.name, "required page does not exist")
+        self.assertEqual(len(problems), 2)
+
+    def test_missing_site_directory_fails(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.assertFails(os.path.join(tmp.name, "site"), "site directory does not exist")
 
 
 class UnreadableFiles(SiteCase):

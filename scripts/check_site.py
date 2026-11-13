@@ -6,7 +6,10 @@ Standard library only. HTML validation is done separately by the Nu Html Checker
 
 * every internal link and fragment resolves to a file (and an id) under the site root;
 * no resource comes from another origin (src, srcset, <link href>, ping, action, formaction,
-  xlink:href, meta refresh, CSS url(), image-set() and @import); data: URIs are allowed;
+  xlink:href, meta refresh, CSS url(), image-set() and @import); data: URIs are allowed only
+  for image/* media types, since a data: stylesheet or document can load further resources;
+* CSS comments and escapes (CSS Syntax 4.3.7) are normalized before CSS is scanned;
+* site/index.html and site/404.html must exist;
 * no <script>, no on* event-handler attribute, no javascript:/vbscript: URL, no cookie meta;
 * .html, .htm, .xhtml and .svg files (any case) all get these page checks;
 * root-relative paths stay inside the GitHub Pages project path /cubentia-site/;
@@ -50,6 +53,37 @@ CSS_TYPE = re.compile(r"""type\(\s*(?:"[^"]*"|'[^']*')\s*\)""", re.I)
 META_REFRESH_URL = re.compile(r"""^\s*\d*(?:\.\d*)?\s*[;,]?\s*(?:url\s*=\s*)?['"]?([^'"]*)""", re.I)
 PAGE_EXTENSIONS = (".html", ".htm", ".xhtml", ".svg")
 SCRIPT_SCHEMES = ("javascript", "vbscript")
+REQUIRED_PAGES = ("index.html", NOT_FOUND_PAGE)
+# CSS escape: hex digits plus one optional whitespace (CRLF counts as one), or any one character.
+CSS_ESCAPE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?|(\r\n|[\s\S])|$)")
+# Characters left escaped so that decoding never changes where strings, url() or tokens end.
+CSS_STRUCTURAL = set("\"'()\\") | set(" \t\n\r\f")
+
+
+def normalize_css(css: str) -> str:
+    """Strip comments, then decode CSS escapes (CSS Syntax 4.3.7) so u\\72l( reads as url(."""
+
+    def decode(match: re.Match[str]) -> str:
+        hex_digits, literal = match.group(1), match.group(2)
+        if hex_digits is not None:
+            code = int(hex_digits, 16)
+            char = "\ufffd" if code == 0 or 0xD800 <= code <= 0xDFFF or code > 0x10FFFF else chr(code)
+        elif literal is None:
+            return "\ufffd"  # backslash at end of input
+        elif literal in ("\n", "\r", "\f", "\r\n"):
+            return ""  # escaped newline: line continuation, not a character
+        else:
+            char = literal
+        # Re-escape structural characters as six hex digits: no trailing whitespace to split on.
+        return f"\\{ord(char):06x}" if char in CSS_STRUCTURAL else char
+
+    return CSS_ESCAPE.sub(decode, CSS_COMMENT.sub("", css))
+
+
+def data_url_allowed(url: str) -> bool:
+    """data: URLs are fine only as images: a data: stylesheet or document can fetch more."""
+    media_type = url.strip()[len("data:"):].split(",", 1)[0].split(";", 1)[0]
+    return media_type.strip().lower().startswith("image/")
 
 
 def css_image_set_strings(css: str) -> list[str]:
@@ -194,7 +228,11 @@ class SiteChecker:
             if kind == "link":
                 return ""  # external navigation is allowed
             if parts.scheme.lower() == "data":
-                return ""  # inline data is not fetched from another origin
+                if data_url_allowed(url):
+                    return ""  # an inline image is not fetched from another origin
+                self._report(rel_file, f"non-image data: {kind} {url[:60]!r} is not allowed: "
+                                       f"it can load third-party resources")
+                return None
             self._report(rel_file, f"third-party {kind} {url!r}: resources must be same-origin")
             return None
         path = unquote(parts.path)
@@ -244,7 +282,7 @@ class SiteChecker:
             self._report(rel_file, f"broken fragment {url!r}: no id {fragment!r} in {target}")
 
     def _check_css(self, rel_file: str, css: str) -> None:
-        css = CSS_COMMENT.sub("", css)
+        css = normalize_css(css)
         urls = [next(g for g in m.groups() if g is not None) for m in CSS_URL.finditer(css)]
         urls += [next(g for g in m.groups() if g is not None) for m in CSS_IMPORT_STRING.finditer(css)]
         urls += css_image_set_strings(css)
@@ -252,8 +290,6 @@ class SiteChecker:
             url = url.strip()
             if not url or url.startswith("#"):
                 continue
-            if url.lower().startswith("data:"):
-                continue  # inline data is not fetched from another origin
             self._resolve(rel_file, url, "CSS resource")
 
     # -- entry point -------------------------------------------------------
@@ -261,6 +297,11 @@ class SiteChecker:
     def run(self) -> list[str]:
         if not os.path.isdir(self.site_dir):
             self.problems.append(f"{self.display_root}: site directory does not exist")
+            return self.problems
+        for required in REQUIRED_PAGES:
+            if not os.path.isfile(os.path.join(self.site_dir, required)):
+                self._report(required, "required page does not exist")
+        if self.problems:
             return self.problems
         files: list[str] = []
         for root, dirs, names in os.walk(self.site_dir):

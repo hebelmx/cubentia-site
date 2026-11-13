@@ -8,7 +8,7 @@ Standard library only. HTML validation is done separately by the Nu Html Checker
 * no resource comes from another origin (src, srcset, <link href>, ping, action, formaction,
   xlink:href, meta refresh, CSS url(), image-set() and @import); data: URIs are allowed;
 * no <script>, no on* event-handler attribute, no javascript:/vbscript: URL, no cookie meta;
-* .html, .htm, .xhtml and .svg files all get these page checks;
+* .html, .htm, .xhtml and .svg files (any case) all get these page checks;
 * root-relative paths stay inside the GitHub Pages project path /cubentia-site/;
 * 404.html, which is served at any missing path, uses only absolute site paths;
 * the word "Rubik" never appears in page text (URLs are exempt).
@@ -46,6 +46,7 @@ CSS_URL = re.compile(r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)""", re.I
 CSS_IMPORT_STRING = re.compile(r"""@import\s+(?:"([^"]*)"|'([^']*)')""", re.I)
 CSS_IMAGE_SET = re.compile(r"(?:-webkit-)?image-set\(", re.I)
 CSS_STRING = re.compile(r""""([^"]*)"|'([^']*)'""")
+CSS_TYPE = re.compile(r"""type\(\s*(?:"[^"]*"|'[^']*')\s*\)""", re.I)
 META_REFRESH_URL = re.compile(r"""^\s*\d*(?:\.\d*)?\s*[;,]?\s*(?:url\s*=\s*)?['"]?([^'"]*)""", re.I)
 PAGE_EXTENSIONS = (".html", ".htm", ".xhtml", ".svg")
 SCRIPT_SCHEMES = ("javascript", "vbscript")
@@ -61,6 +62,7 @@ def css_image_set_strings(css: str) -> list[str]:
             end += 1
         body = css[match.end():end - 1]
         body = CSS_URL.sub(" ", body)  # url(...) entries are checked separately
+        body = CSS_TYPE.sub(" ", body)  # type("image/avif") is a MIME type, not a URL
         found += [next(g for g in m.groups() if g is not None) for m in CSS_STRING.finditer(body)]
     return found
 
@@ -235,7 +237,7 @@ class SiteChecker:
 
     def _check_fragment(self, rel_file: str, url: str, target: str) -> None:
         fragment = unquote(urlsplit(url.strip()).fragment)
-        if not fragment or not target.endswith(PAGE_EXTENSIONS):
+        if not fragment or not target.lower().endswith(PAGE_EXTENSIONS):
             return
         page = self._page(target)
         if page is None or fragment not in page.ids:
@@ -266,7 +268,7 @@ class SiteChecker:
             for name in sorted(names):
                 files.append(self._rel(os.path.join(root, name)))
         for rel_file in files:
-            if rel_file.endswith(PAGE_EXTENSIONS):
+            if rel_file.lower().endswith(PAGE_EXTENSIONS):
                 page = self._page(rel_file)
                 if page is None:
                     self._report(rel_file, "cannot be read as UTF-8")
@@ -281,7 +283,7 @@ class SiteChecker:
                     self._resolve(rel_file, url, "resource")
                 for css in page.css_blocks:
                     self._check_css(rel_file, css)
-            elif rel_file.endswith(".css"):
+            elif rel_file.lower().endswith(".css"):
                 try:
                     with open(os.path.join(self.site_dir, rel_file), encoding="utf-8") as handle:
                         css = handle.read()

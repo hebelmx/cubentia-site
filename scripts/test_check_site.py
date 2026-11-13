@@ -199,6 +199,9 @@ class ThirdPartyResources(SiteCase):
         self.assertFails(self.build(css_extra="body { background-image: -webkit-image-set('//x.com/a.png' 1x); }"),
                          "styles.css", "third-party")
 
+    def test_css_image_set_type_passes(self) -> None:
+        self.assertPasses(self.build(css_extra='body { background-image: image-set("styles.css" type("image/avif")); }'))
+
     def test_video_poster_fails(self) -> None:
         self.assertFails(self.build(body='<video poster="https://x.com/p.png"></video>'), "third-party")
 
@@ -254,6 +257,11 @@ class ScriptsAndCookies(SiteCase):
 
     def test_htm_page_is_checked(self) -> None:
         self.assertFails(self.build(extra_files={"old.htm": "<p onclick=\"x()\">Hi</p>"}), "old.htm", "onclick")
+
+    def test_uppercase_extensions_are_checked(self) -> None:
+        site = self.build(extra_files={"OLD.HTML": "<script></script>",
+                                       "EXTRA.CSS": "@import url(https://x.com/a.css);"})
+        self.assertFails(site, "OLD.HTML", "<script>", "EXTRA.CSS", "third-party")
 
     def test_set_cookie_meta_fails(self) -> None:
         self.assertFails(self.build(head='<meta http-equiv="Set-Cookie" content="a=b">'), "set-cookie")

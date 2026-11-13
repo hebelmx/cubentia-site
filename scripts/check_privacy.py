@@ -11,7 +11,8 @@ Standard library only. Three inputs:
   developer, the contact email and the effective date;
 * the policy record, privacy-policy.json (repository root, not published). It holds the
   publisher, Play developer, contact email, effective date and textSha256, a hash of the
-  whitespace-normalized text of <main> plus the (data-fact, data-value) pairs in order.
+  whitespace-normalized text of <main>, the (data-fact, data-value) pairs in order, the
+  <title>, the meta description and every <a href> target.
 
 The check fails when a fact has no statement with an equal value, the page states a fact the
 file lacks, statements conflict or are empty, a marker is missing or wrong, the page holds any
@@ -289,7 +290,7 @@ def check_facts(page_path: str, page: Page, facts: dict[str, str], problems: lis
         values = stated.get(key)
         if not values:
             problems.append(f"{page_path}: no statement for fact '{key}' "
-                            f'(add data-fact="{key}" data-value="{expected}")')
+                            f'(add data-fact="{key}" data-value="{html.escape(expected)}")')
         elif expected not in values or len(values) > 1:
             problems.append(f"{page_path}: fact '{key}': facts file says {expected!r}, "
                             f"page says {', '.join(repr(v) for v in sorted(values))}")

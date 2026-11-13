@@ -71,9 +71,12 @@ The app's build exports what it can prove about privacy to `docs/privacy-facts.j
 1. Edit `site/privacy/index.html`.
 2. Set a new, later effective date in the `<time data-policy="effective-date" datetime="…">` marker and its visible text, written as `13 November 2026` (the check requires the text to match the `datetime`).
 3. Run `python3 scripts/check_privacy.py --update`. It rewrites `effectiveDate` and `textSha256` in `privacy-policy.json`, and refuses unless the page's date is later than the recorded one.
-4. Run `bash scripts/check.sh` and commit the page and the record together.
+4. The self-tests in `scripts/test_check_privacy.py` copy the shipped page and pin its effective date (`DATE_MARKER`, `2026-11-13`) and some sentences. Update those literals to the new page.
+5. Run `bash scripts/check.sh` and commit the page, the record and the tests together.
 
-When the app's facts change, the daily scheduled run fails until the page states the new facts (and gets a new date).
+To change the publisher, the Play developer name or the contact, edit the marker on the page and the matching field (`publisher`, `playDeveloper` or `contactEmail`) in `privacy-policy.json` by hand, then follow the steps above. `--update` rewrites only `effectiveDate` and `textSha256`.
+
+When the app's facts change, the daily scheduled run fails until the page states the new facts (and gets a new date). Copy the app's new `docs/privacy-facts.json` over `scripts/fixtures/privacy-facts.json` and update `test_fixture_is_the_app_v1_file` in the same change, or the self-tests fail against the old fixture.
 
 GitHub disables scheduled workflows in a public repository after 60 days without repository activity, and emails the failure of a scheduled run only to the user who last changed the `cron` line. If the Actions tab shows the Pages workflow as disabled, re-enable it there. Pull requests and pushes run the same facts check, so drift is also caught on the next change.
 

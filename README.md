@@ -43,7 +43,7 @@ Needs Python 3, Node.js (for `npx`) and Java 11 or later.
 bash scripts/check.sh
 ```
 
-It runs the checker's self-tests, then `scripts/check_site.py site`, then the Nu Html Checker (`vnu-jar`, version pinned in `check.sh`) on the HTML and CSS. It exits non-zero on any problem and prints each one as `file: message`.
+It runs the checker's self-tests, then `scripts/check_site.py site`, then the Nu Html Checker (`vnu-jar`, version pinned in `check.sh`) on the HTML and CSS. It exits non-zero on any problem. `check_site.py` prints each problem as `file: message`; the Nu Html Checker uses its own format.
 
 ## Preview locally
 

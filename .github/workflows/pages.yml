@@ -8,6 +8,12 @@ on:
 
 permissions: {}
 
+# Runs on the same ref queue in order, so an older push can never deploy after a newer one.
+# A pull request has its own ref, so PR runs never queue behind main.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   check:
     name: check
@@ -38,10 +44,6 @@ jobs:
     permissions:
       pages: write
       id-token: write
-    # One deployment at a time; never cancel a deployment that has started.
-    concurrency:
-      group: pages
-      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

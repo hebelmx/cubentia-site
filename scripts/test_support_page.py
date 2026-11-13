@@ -20,6 +20,8 @@ from html.parser import HTMLParser
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SUPPORT = os.path.join(ROOT, "site", "support", "index.html")
+LANDING = os.path.join(ROOT, "site", "index.html")
+PRIVACY = os.path.join(ROOT, "site", "privacy", "index.html")
 RECORD = os.path.join(ROOT, "privacy-policy.json")
 ISSUES_URL = "https://github.com/hebelmx/RubikXplorer/issues"
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -125,6 +127,40 @@ class SupportPage(unittest.TestCase):
         page = self.page.replace("<li>Your Android version</li>", "")
         problems = support_problems(page, self.contact)
         self.assertIn("report item missing: 'Your Android version'", problems)
+
+    def test_no_mailto_fails(self) -> None:
+        page = self.page.replace(f'href="mailto:{self.contact}"', 'href="../"')
+        problems = support_problems(page, self.contact)
+        self.assertIn(f"no mailto link; expected mailto:{self.contact}", problems)
+
+    def test_missing_privacy_link_fails(self) -> None:
+        page = self.page.replace('href="../privacy/"', 'href="../"')
+        self.assertIn("no link to ../privacy/", support_problems(page, self.contact))
+
+    def test_missing_no_personal_data_statement_fails(self) -> None:
+        page = self.page.replace(NO_PERSONAL_DATA, "")
+        self.assertIn(f"statement missing: {NO_PERSONAL_DATA!r}",
+                      support_problems(page, self.contact))
+
+    def test_missing_do_not_post_statement_fails(self) -> None:
+        page = self.page.replace(DO_NOT_POST, "")
+        self.assertIn(f"statement missing: {DO_NOT_POST!r}",
+                      support_problems(page, self.contact))
+
+
+class SupportLinks(unittest.TestCase):
+    """AC2: the landing page and the privacy page each link the support page."""
+
+    @staticmethod
+    def hrefs(path: str) -> list[str]:
+        parser = _Page()
+        parser.feed(read(path))
+        parser.close()
+        return parser.hrefs
+
+    def test_landing_and_privacy_link_support(self) -> None:
+        self.assertIn("support/", self.hrefs(LANDING))
+        self.assertIn("../support/", self.hrefs(PRIVACY))
 
 
 if __name__ == "__main__":

@@ -38,7 +38,8 @@ scripts/
   test_check_a11y.py   self-tests for check_a11y.py
   check_privacy.py     privacy-policy check against the app's facts and the policy record
   test_check_privacy.py  self-tests for check_privacy.py
-  test_support_page.py  self-test: the support page's only email is privacy-policy.json contactEmail
+  test_support_page.py  content test of the shipped support page (its only email is
+                       privacy-policy.json contactEmail) and of the landing and privacy pages' support links
   fixtures/privacy-facts.json  copy of the app's v1.0 facts, the local default
   preview.sh           local preview under /cubentia-site/
 .github/workflows/
@@ -82,7 +83,7 @@ The app's build exports what it can prove about privacy to `docs/privacy-facts.j
 1. Edit `site/privacy/index.html`, or a stylesheet it loads: **any change to `site/styles.css` (even for another page) is a policy change and needs a new effective date.**
 2. Set a new, later effective date in the `<time data-policy="effective-date" datetime="…">` marker and its visible text, written as `13 November 2026` (the check requires the text to match the `datetime`).
 3. Run `python3 scripts/check_privacy.py --update`. It rewrites `effectiveDate` and `textSha256` in `privacy-policy.json`, and refuses unless the page's date is later than the recorded one.
-4. The self-tests in `scripts/test_check_privacy.py` copy the shipped page and pin its effective date (`DATE_MARKER`, `2026-11-14`) and some sentences. Update those literals to the new page.
+4. The self-tests in `scripts/test_check_privacy.py` copy the shipped page and pin its current effective date (`DATE_MARKER`) and some sentences. Update those literals to the new page.
 5. Run `bash scripts/check.sh` and commit the page, the record and the tests together.
 
 The record in the same change is not trusted on its own: recomputing `textSha256` while keeping the date would satisfy it. So `check_privacy.py --base REV` also compares with a trusted previous git revision. It hashes `REV`'s page with the current checker, and if this page's hash differs, the effective date must be strictly later than `REV`'s recorded `effectiveDate`. If `REV` has no `privacy-policy.json` yet (the first publish), the comparison is skipped and the output says so. Any other failure to read `REV` (unknown or unfetched revision, a shallow clone without it, a record without a page, an invalid record) fails the check.

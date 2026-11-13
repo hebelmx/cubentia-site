@@ -1,6 +1,6 @@
 # cubentia-site
 
-Public website and privacy policy for Cubentia, an offline Android cube tutor published by Exxerpro Solutions, S.A. de C.V. (published on Google Play as Abel Briones).
+Public website and privacy policy for Cubentia, an offline Android cube tutor from Exxerpro Solutions, S.A. de C.V. (published on Google Play as Abel Briones).
 
 The site is plain static HTML and one CSS file. It has no JavaScript, no cookies, no tracking and no resource from another origin. GitHub Pages publishes it from GitHub Actions.
 
@@ -54,7 +54,7 @@ bash scripts/check.sh
 
 It runs the checkers' self-tests, then `scripts/check_site.py site`, then `scripts/check_a11y.py site`, then `scripts/check_privacy.py` (below), then the Nu Html Checker (`vnu-jar`, version pinned in `check.sh`) on the HTML and CSS. It exits non-zero on any problem. `check_site.py`, `check_a11y.py` and `check_privacy.py` print each problem as `file: message`; the Nu Html Checker uses its own format.
 
-`check_a11y.py` checks the structure of every page for WCAG 2.2 AA: `<html lang="en">`, a non-empty title, a viewport that allows zoom, one `header`, `main id="main"` and `footer`, a skip link as the first focusable element, one `h1` with heading levels that never skip, `alt` on every image, an `href` and text on every link, no `tabindex` other than `0` or `-1`, and exactly one stylesheet, `styles.css`, so the contrast check covers every page. Keyboard flow, 200% zoom, 320 CSS px reflow and the rendered light and dark themes are checked by hand and recorded in the pull request.
+`check_a11y.py` checks the structure of every page for WCAG 2.2 AA: `<html lang="en">`, a non-empty title, a viewport that allows zoom, one `header`, `main id="main"` and `footer`, a skip link as the first focusable element, one `h1` with heading levels that never skip, `alt` on every image, an `href` and text on every link, no `tabindex` other than `0` or `-1`, exactly one stylesheet, `styles.css`, and no `<style>` element or `style=""` attribute, so all of each page's CSS is in the stylesheet the contrast check reads. Keyboard flow, 200% zoom, 320 CSS px reflow and the rendered light and dark themes are checked by hand and recorded in the pull request.
 
 `PRIVACY_BASE` names the git revision the privacy check compares the policy with (see [Changing the policy](#changing-the-policy)); it must be set on CI and is optional locally.
 

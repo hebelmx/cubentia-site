@@ -534,12 +534,28 @@ class Stylesheets(PrivacyCase):
         # #888888 on --surface #f4f5f7 is about 3.25:1: enough for the old 3:1, not for AA text.
         self.assertCssFails(":root { --ink-muted: #888888; }", "4.5")
         # #656d79 on #f4f5f7 is about 4.79:1 and passes.
+        self.assertIn("--ink-muted: #5a6370;", self.styles)
         self.assertEqual(self.styled(self.styles.replace("--ink-muted: #5a6370;",
                                                          "--ink-muted: #656d79;")), [])
 
     def test_border_and_outline_need_3_to_1(self) -> None:
         self.assertCssFails("li { outline: 3px solid var(--surface-raised); }", "3:1")
         self.assertCssFails("li { border: 2px solid var(--surface); }", "3:1")
+        # In a style="" attribute on the policy page too.
+        page = self.page_with("<h2>In short</h2>",
+                              '<h2 style="border: 2px solid var(--surface)">In short</h2>')
+        problems = self.styled(self.styles, page=page)
+        self.assertTrue(any("3:1" in p for p in problems), problems)
+        # Checked against the site's own surfaces, not only the browser canvas: in the dark
+        # scheme #636363 reaches 3.12:1 on the canvas #121212 and 3.10:1 on --surface, but
+        # --surface-raised is #636363 itself, so a border in it fails (inks still reach 4.5:1).
+        dark = ("@media (prefers-color-scheme: dark) { :root { --surface-raised: #636363; "
+                "--ink-muted: #e7eaee; --accent: #e7eaee; } }\n"
+                "li { border: 2px solid var(--surface-raised); }")
+        problems = [p for p in self.styled(self.styles + "\n" + dark) if "dark scheme" in p]
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("3:1", problems[0])
+        self.assertIn("on background #636363", problems[0])
         # A token used only as a text or background color is not held to the non-text rule.
         self.assertEqual(self.styled(self.styles + "\nli { background: var(--surface-raised); }"), [])
 

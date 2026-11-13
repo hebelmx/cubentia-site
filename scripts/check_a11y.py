@@ -18,7 +18,8 @@ Every .html file under the site directory must have:
   every <a>;
 * no tabindex other than 0 or -1;
 * exactly one stylesheet, the site's styles.css (a relative path to it, or
-  /cubentia-site/styles.css), and no <style> element, so the contrast check covers it.
+  /cubentia-site/styles.css), no <style> element and no style="" attribute, so all of a
+  page's CSS is in the stylesheet the contrast check reads.
 
 Usage: python3 scripts/check_a11y.py [SITE_DIR]   (default: site)
 Prints each problem as "file: message" and exits 1 if there is any; prints "OK" otherwise.
@@ -100,6 +101,9 @@ class A11yParser(HTMLParser):
         heading = HEADING.fullmatch(tag)
         if heading:
             self.headings.append(int(heading.group(1)))
+        if "style" in attr:
+            self.problems.append(f"<{tag}> has a style attribute: put styles in {STYLESHEET} "
+                                 f"so the contrast check covers them")
         if "tabindex" in attr and (attr["tabindex"] or "").strip() not in ("0", "-1"):
             self.problems.append(f"<{tag}> has tabindex={attr['tabindex']!r}: only 0 or -1 is allowed")
         link = None
@@ -138,7 +142,8 @@ class A11yParser(HTMLParser):
 
 def viewport_problem(content: str) -> str | None:
     settings: dict[str, str] = {}
-    for part in re.split(r"[,;]", content):
+    collapsed = re.sub(r"\s*=\s*", "=", content.strip())
+    for part in re.split(r"[,;\s]+", collapsed):
         name, _, value = part.partition("=")
         settings[name.strip().lower()] = value.strip().lower()
     if settings.get("user-scalable") in ("no", "0"):

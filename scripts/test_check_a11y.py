@@ -125,7 +125,10 @@ class Zoom(A11yCase):
         for content, needle in ((viewport + ", user-scalable=no", "user-scalable=no"),
                                 (viewport + ", user-scalable=0", "user-scalable=0"),
                                 (viewport + ", maximum-scale=1", "maximum-scale=1"),
-                                (viewport + ", Maximum-Scale=5", "maximum-scale=5")):
+                                (viewport + ", Maximum-Scale=5", "maximum-scale=5"),
+                                ("initial-scale=1 user-scalable=no", "user-scalable=no"),
+                                ("width=device-width initial-scale = 1  maximum-scale = 2",
+                                 "maximum-scale=2")):
             with self.subTest(content=content):
                 self.assertFails(self.index_with(viewport, content), needle)
 
@@ -173,6 +176,8 @@ class SkipLink(A11yCase):
                          "no skip link", "<button>")
         self.assertFails(self.index_with(self.SKIP, '<p tabindex="0">Hi</p>\n  ' + self.SKIP),
                          "no skip link", "<p>")
+        self.assertFails(self.index_with(self.SKIP, '<input type="text" name="q">\n  ' + self.SKIP),
+                         "no skip link", "<input>")
 
     def test_skip_link_without_text_or_wrong_target(self) -> None:
         self.assertFails(self.index_with(self.SKIP, '<a href="#main"></a>'), "no skip link")
@@ -226,6 +231,8 @@ class ImagesAndLinks(A11yCase):
     def test_link_without_href(self) -> None:
         self.assertFails(self.index_with("<p>An offline tutor.</p>", "<p><a>Home</a></p>"),
                          "<a> with text 'Home' has no href")
+        self.assertFails(self.index_with("<p>An offline tutor.</p>", '<p><a href="">Home</a></p>'),
+                         "has no href")
 
 
 class TabIndex(A11yCase):
@@ -238,6 +245,15 @@ class TabIndex(A11yCase):
         self.assertPasses(self.index_with("<p>An offline tutor.</p>",
                                           '<p tabindex="-1">An offline tutor.</p>'))
         self.assertPasses(self.index_with("<h2>Section</h2>", '<h2 tabindex="-1">Section</h2>'))
+
+
+class StyleAttribute(A11yCase):
+    def test_style_attribute_on_any_element(self) -> None:
+        self.assertFails(self.index_with("<p>An offline tutor.</p>",
+                                         '<p style="color: #888">An offline tutor.</p>'),
+                         "<p> has a style attribute", "styles.css")
+        self.assertFails(self.index_with('<main id="main">', '<main id="main" style="">'),
+                         "<main> has a style attribute")
 
 
 class Stylesheet(A11yCase):

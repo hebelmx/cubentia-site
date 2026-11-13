@@ -19,11 +19,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from check_privacy import Page, check_privacy, update_record  # noqa: E402
+from check_privacy import check_privacy, policy_sha256, update_record  # noqa: E402
 
 CHECKER = os.path.join(HERE, "check_privacy.py")
 CHECK_SH = os.path.join(HERE, "check.sh")
 PAGE = os.path.join(ROOT, "site", "privacy", "index.html")
+STYLES = os.path.join(ROOT, "site", "styles.css")
 RECORD = os.path.join(ROOT, "privacy-policy.json")
 FIXTURE = os.path.join(HERE, "fixtures", "privacy-facts.json")
 DATE_MARKER = '<time data-policy="effective-date" datetime="2026-11-13">13 November 2026</time>'
@@ -44,7 +45,11 @@ class PrivacyCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.dir = tmp.name
-        self.page_path = os.path.join(self.dir, "index.html")
+        # The page sits one level down, as on the site, so its ../styles.css resolves.
+        os.makedirs(os.path.join(self.dir, "privacy"))
+        self.page_path = os.path.join(self.dir, "privacy", "index.html")
+        self.styles_path = os.path.join(self.dir, "styles.css")
+        self.styles = read(STYLES)
         self.record_path = os.path.join(self.dir, "privacy-policy.json")
         self.facts_path = os.path.join(self.dir, "privacy-facts.json")
         self.page = read(PAGE)
@@ -52,9 +57,11 @@ class PrivacyCase(unittest.TestCase):
         self.facts = json.loads(read(FIXTURE))
 
     def write(self, page: str | None = None, record: dict | None = None,
-              facts: dict | str | None = None) -> None:
+              facts: dict | str | None = None, styles: str | None = None) -> None:
         with open(self.page_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(self.page if page is None else page)
+        with open(self.styles_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(self.styles if styles is None else styles)
         if record is not False:
             with open(self.record_path, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(self.record if record is None else record, handle)
@@ -78,6 +85,11 @@ class PrivacyCase(unittest.TestCase):
         for needle in needles:
             self.assertIn(needle, joined)
         return problems
+
+    def dated(self, page: str, styles: str | None = None) -> dict:
+        """A record that matches the page, so only the wording or CSS can fail."""
+        self.write(page=page, styles=styles)
+        return {**self.record, "textSha256": policy_sha256(self.page_path)}
 
     def page_with(self, old: str, new: str) -> str:
         self.assertIn(old, self.page)
@@ -340,10 +352,6 @@ class TextOutsideMain(PrivacyCase):
 class Wording(PrivacyCase):
     """Each fact value is tied to the sentence it must produce."""
 
-    def dated(self, page: str) -> dict:
-        """A record that matches the page, so only the wording can fail."""
-        return {**self.record, "textSha256": Page(page).text_sha256()}
-
     def test_supported_value_with_contradictory_wording(self) -> None:
         page = self.page_with(INTERNET + INTERNET_TEXT,
                               INTERNET + "The app has internet permission and sends data.")
@@ -428,6 +436,208 @@ class Wording(PrivacyCase):
         self.assertFails("statement for fact 'applicationId'", "com.example.other",
                          page=page, record=self.dated(page),
                          facts={**self.facts, "applicationId": "com.example.other"})
+
+
+class Stylesheets(PrivacyCase):
+    """Every stylesheet the page loads is hashed and may hold only allowlisted CSS."""
+
+    def styled(self, styles: str, page: str | None = None) -> list[str]:
+        """Problems with this stylesheet and a record that matches it, so only the CSS can fail."""
+        page = self.page if page is None else page
+        record = self.dated(page, styles)
+        self.write(page=page, record=record, styles=styles)
+        return self.problems()
+
+    def assertCssFails(self, css: str, needle: str = "not allowed", append: bool = True) -> None:
+        problems = self.styled(self.styles + "\n" + css if append else css)
+        self.assertTrue(problems, f"expected {css!r} to fail")
+        self.assertTrue(any(needle in p for p in problems), (css, problems))
+        self.assertFalse(any("policy text changed" in p for p in problems), problems)
+
+    def test_shipped_stylesheet_passes(self) -> None:
+        self.assertEqual(self.styled(self.styles), [])
+
+    def test_stylesheet_change_needs_a_new_date(self) -> None:
+        # Allowed CSS, stale record: a stylesheet change is a policy change.
+        self.assertFails("policy text changed without a new effective date",
+                         styles=self.styles + "\nh1 { font-weight: 700; }\n")
+
+    def test_data_fact_display_none(self) -> None:
+        self.assertCssFails("[data-fact]{display:none}", "CSS display: 'none'")
+        self.assertCssFails("[data-fact] { display: none; }", "CSS display: 'none'")
+
+    def test_hiding_properties_are_rejected(self) -> None:
+        for css in ("li { visibility: hidden; }", "li { visibility: collapse; }",
+                    "li { content-visibility: hidden; }", "li { opacity: 0; }",
+                    "li { opacity: .01; }", "li { font-size: 0; }", "li { font-size: 1px; }",
+                    "li { font-size: 0.1rem; }", "li { font-size: 0.5em; }",
+                    "li { width: 0; overflow: hidden; }", "li { height: 0; }",
+                    "li { max-height: 1px; overflow: clip; }", "li { clip: rect(0 0 0 0); }",
+                    "li { clip-path: inset(50%); }", "li { position: absolute; left: -9999px; }",
+                    "li { text-indent: -9999px; }", "li { color: transparent; }",
+                    "li { color: #f4f5f7; }", "li { color: var(--surface); }",
+                    "li { color: currentcolor; }", "li { background: transparent; }",
+                    "li { transform: scale(0); }", "li { scale: 0; }", "li { zoom: 0.01; }",
+                    "li { filter: opacity(0); }", "li { line-height: 0; }",
+                    "li { -webkit-text-fill-color: transparent; }", "li { margin: -9999px; }",
+                    "li { margin-left: 9999px; }", "li { padding-left: 200rem; }",
+                    "li { max-width: 0; }", "li { display: contents; }",
+                    "main { outline: 9999px solid var(--surface); }",
+                    "li { border: 9999px solid var(--surface); }", "li { inset: 0; }",
+                    "li { mix-blend-mode: screen; }", "li { letter-spacing: -1rem; }"):
+            with self.subTest(css=css):
+                self.assertCssFails(css)
+
+    def test_shorthand_forms_are_rejected(self) -> None:
+        for css in ("li { font: 0/0 a; }", "li { overflow: hidden; }", "li { inset: -100%; }",
+                    "li { flex: 0; }", "li { transition: all 1s; }", "li { animation: x 1s; }",
+                    "li { background: #f4f5f7; }", "li { columns: 1 0; }"):
+            with self.subTest(css=css):
+                self.assertCssFails(css)
+
+    def test_uppercase_and_important(self) -> None:
+        self.assertCssFails("[DATA-FACT] { DISPLAY: NONE; }", "CSS display: 'NONE'")
+        self.assertCssFails("li { Opacity: 0 }", "CSS property opacity")
+        self.assertCssFails("li { display: block !important; }", "!important")
+        self.assertCssFails("li { display: none!IMPORTANT; }", "!important")
+
+    def test_escapes_are_rejected(self) -> None:
+        for css in ("li { dis\\70 lay: none; }", "li { display: \\6e one; }",
+                    "[data-fact] { \\64isplay: none }", 'li { font-family: "\\41"; }'):
+            with self.subTest(css=css):
+                self.assertCssFails(css, "escapes")
+
+    def test_comments(self) -> None:
+        # A comment is removed, never joined: dis/**/play is not display.
+        self.assertCssFails("li { dis/**/play: none; }", "not allowed")
+        self.assertCssFails("li { display: /* */ none; }", "CSS display: 'none'")
+        self.assertCssFails("li { display: none; } /* unterminated", "unterminated CSS comment")
+        # A comment opener inside a string does not start a comment.
+        self.assertCssFails(':root { --font-sans: "/*"; } li { display: none; } '
+                            ':root { --gutter: "*/"; }', "CSS display: 'none'")
+
+    def test_custom_properties_and_var(self) -> None:
+        self.assertCssFails(":root { --gutter: none; } li { display: var(--gutter); }")
+        self.assertCssFails("li { --ink: #f4f5f7; }", "may be set only on :root")
+        self.assertCssFails(":root, [data-fact] { --ink: #f4f5f7; }", "may be set only on :root")
+        self.assertCssFails(":root { --hide: none; }", "custom property --hide")
+        self.assertCssFails(":root { --Ink: #f4f5f7; }", "custom property --Ink")
+        self.assertCssFails(":root { --ink: #f4f5f7; }", "contrast")
+        self.assertCssFails(":root { --ink: transparent; }")
+        self.assertCssFails(":root { --gutter: 9999px; }")
+        self.assertCssFails(":root { --measure: 0; }")
+        self.assertCssFails(':root { --font-sans: "Adobe Blank", sans-serif; }')
+        self.assertCssFails("li { color: var(--ink, transparent); }")
+        self.assertCssFails("li { color: var(--surface-raised); }")
+
+    def test_at_rules(self) -> None:
+        for css, needle in (("@media screen { li { display: none; } }", "@media 'screen'"),
+                            ("@media (prefers-color-scheme: dark) { li { display: none; } }",
+                             "CSS display: 'none'"),
+                            ("@media (prefers-color-scheme: dark) { :root { --ink: #111317; } }",
+                             "contrast"),
+                            ("@media (prefers-color-scheme: dark) { @media print { li "
+                             "{ display: none } } }", "at-rule @media"),
+                            ("@supports (display: grid) { li { display: none; } }", "@supports"),
+                            ("@layer x { li { display: none; } }", "@layer"),
+                            ("@layer x;", "@layer"),
+                            ("@container (min-width: 1px) { li { display: none; } }", "@container"),
+                            ("@font-face { font-family: x; src: url(x.woff2); }", "@font-face"),
+                            ("@keyframes k { to { opacity: 0; } }", "@keyframes"),
+                            ("@scope (main) { li { display: none; } }", "@scope")):
+            with self.subTest(css=css):
+                self.assertCssFails(css, needle)
+
+    def test_nesting_and_broken_structure(self) -> None:
+        for css in ("main { & li { display: none; } }", "main { li { display: none; } }",
+                    "li { color: var(--ink); } } [data-fact] { display: none; }",
+                    "li { color: var(--ink) ", "li { color: var(--ink)( } [data-fact] "
+                    "{ display: none; }", "[data-fact] { display: none; ",
+                    "<!-- [data-fact] { display: none; } -->", "li { color }"):
+            with self.subTest(css=css):
+                self.assertCssFails(css, "")
+
+    def test_generated_content(self) -> None:
+        self.assertCssFails('li::before { content: "Not true: "; }', "CSS property content")
+        self.assertCssFails("li::after { content: none; display: block; }", "CSS property content")
+
+    def test_attribute_and_structural_selectors_are_still_checked(self) -> None:
+        for selector in ('[data-value="false"]', "main > ul > li:nth-child(2)", "li + li",
+                         ":is(p, li)", "main *", "body:has(li)", "li::first-line"):
+            with self.subTest(selector=selector):
+                self.assertCssFails(selector + " { font-size: 0; }", "CSS font-size")
+
+    def test_non_ascii_css_is_rejected(self) -> None:
+        self.assertCssFails("li { display\uff1a none; }", "printable ASCII")
+
+    def test_color_scheme_must_be_set(self) -> None:
+        styles = self.styles.replace("  color-scheme: light dark;\n", "")
+        self.assertNotEqual(styles, self.styles)
+        problems = self.styled(styles)
+        self.assertTrue(any("color-scheme" in p for p in problems), problems)
+
+    def test_inline_style_anywhere_is_checked(self) -> None:
+        for old, new in (("<h1>", '<h1 style="display:none">'),
+                         ("<body>", '<body style="opacity:0">'),
+                         ('<html lang="en">', '<html lang="en" style="--ink:#f4f5f7">'),
+                         ("<h2>In short</h2>",
+                          '<h2 style="position:fixed;inset:0;background:var(--surface)">In short</h2>'),
+                         ("<h1>", '<h1 style="DIS\\70 LAY:none">')):
+            with self.subTest(new=new):
+                page = self.page_with(old, new)
+                problems = self.styled(self.styles, page=page)
+                self.assertTrue(any("style attribute" in p for p in problems), problems)
+        page = self.page_with("<h1>", '<h1 style="color: var(--ink)">')
+        self.assertEqual(self.styled(self.styles, page=page), [])
+
+    def test_imported_stylesheet_is_checked_and_hashed(self) -> None:
+        extra = os.path.join(self.dir, "extra.css")
+        with open(extra, "w", encoding="utf-8") as handle:
+            handle.write("h1 { font-weight: 700; }\n")
+        styles = '@import "extra.css";\n' + self.styles
+        self.assertEqual(self.styled(styles), [])
+        with open(extra, "w", encoding="utf-8") as handle:
+            handle.write("h1 { font-weight: 600; }\n")
+        self.assertFails("policy text changed without a new effective date", styles=styles)
+        with open(extra, "w", encoding="utf-8") as handle:
+            handle.write("[data-fact]{display:none}\n")
+        problems = self.styled(styles)
+        self.assertTrue(any("extra.css" in p and "CSS display" in p for p in problems), problems)
+        for imported in ("url(extra.css)", 'url("extra.css")', "'extra.css'"):
+            with self.subTest(imported=imported):
+                problems = self.styled(f"@import {imported};\n" + self.styles)
+                self.assertTrue(any("CSS display" in p for p in problems), problems)
+        for bad in ('@import "extra.css" print;', '@import url(extra.css) layer(x);',
+                    '@import "https://example.com/x.css";', '@import "/x.css";',
+                    '@import "extra.css?x";', '@import "missing.css";', '@import "styles.css";'):
+            with self.subTest(bad=bad):
+                self.assertTrue(self.styled(bad + "\n" + self.styles))
+
+    def test_every_linked_stylesheet_is_checked(self) -> None:
+        extra = os.path.join(self.dir, "extra.css")
+        with open(extra, "w", encoding="utf-8") as handle:
+            handle.write("[data-fact]{display:none}\n")
+        for link in ('<link rel="StyleSheet" href="../extra.css">',
+                     '<link rel="alternate stylesheet" title="x" href="../extra.css">',
+                     '<link rel="stylesheet" media="print" href="../extra.css">'):
+            with self.subTest(link=link):
+                page = self.page_with("</head>", link + "</head>")
+                problems = self.styled(self.styles, page=page)
+                self.assertTrue(any("extra.css" in p and "CSS display" in p for p in problems),
+                                problems)
+
+    def test_stylesheet_href_must_be_a_plain_relative_path(self) -> None:
+        for href in ("https://example.com/x.css", "//example.com/x.css", "/cubentia-site/styles.css",
+                     "../styles.css?v=2", "../styles.css#x", "data:text/css,li{display:none}",
+                     " ../styles.css", "../missing.css"):
+            with self.subTest(href=href):
+                page = self.page_with('href="../styles.css"', f'href="{href}"')
+                self.assertTrue(self.styled(self.styles, page=page))
+
+    def test_base_element_is_rejected(self) -> None:
+        page = self.page_with("</head>", '<base href="/other/"></head>')
+        problems = self.styled(self.styles, page=page)
+        self.assertTrue(any("<base>" in p for p in problems), problems)
 
 
 class BadFacts(PrivacyCase):
@@ -540,6 +750,9 @@ class PreviousRevision(unittest.TestCase):
         self.page_path = os.path.join(self.repo, "site", "privacy", "index.html")
         self.record_path = os.path.join(self.repo, "privacy-policy.json")
         os.makedirs(os.path.dirname(self.page_path))
+        with open(os.path.join(self.repo, "site", "styles.css"), "w", encoding="utf-8",
+                  newline="\n") as handle:
+            handle.write(read(STYLES))
         self.git("init", "-q", "-b", "main")
         self.page = read(PAGE)
         self.record = json.loads(read(RECORD))
@@ -562,7 +775,7 @@ class PreviousRevision(unittest.TestCase):
                 os.remove(self.record_path)
             return
         record = dict(self.record if record is None else record)
-        record["textSha256"] = Page(read(self.page_path)).text_sha256()
+        record["textSha256"] = policy_sha256(self.page_path)
         with open(self.record_path, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(record, handle)
 
@@ -594,6 +807,15 @@ class PreviousRevision(unittest.TestCase):
         self.assertTrue(any("policy text changed since" in p for p in problems), problems)
         # Without --base this change is invisible, which is the bug being closed.
         self.assertEqual(self.problems(None), [])
+
+    def test_stylesheet_change_same_date_fails(self) -> None:
+        base = self.published()
+        styles = os.path.join(self.repo, "site", "styles.css")
+        with open(styles, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write("h1 { font-weight: 700; }\n")
+        self.put()  # page unchanged, the record's hash is recomputed, the date is kept
+        problems = self.problems(base)
+        self.assertTrue(any("policy text changed since" in p for p in problems), problems)
 
     def test_age_coverage_change_same_date_fails(self) -> None:
         base = self.published()

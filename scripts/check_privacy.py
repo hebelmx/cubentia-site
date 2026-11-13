@@ -13,12 +13,16 @@ Standard library only. Three inputs:
   publisher, Play developer, contact email, effective date and textSha256, a hash of the
   whitespace-normalized text of the whole page (head, header, nav, main, footer, and any text
   after </body>), every element's tag and attributes in order, the (data-fact, data-value)
-  pairs in order, the <title>, the meta description and every <a href> target.
+  pairs in order, the <title>, the meta description, every <a href> target, and the path and
+  full text of every stylesheet the page loads (<link rel=stylesheet>, then @import), so a
+  stylesheet change is a policy change and needs a later effective date.
 
 Each supported fact value has one approved wording (APPROVED_WORDING). A statement's text must
 equal the wording for its value; a value with no approved wording fails, naming the fact. A
 statement must be a visible <p> or <li> inside <main>: no hiding attributes on it or its
-ancestors, and only attribute-free <code>, <em> or <strong> inside it.
+ancestors, and only attribute-free <code>, <em> or <strong> inside it. Every stylesheet the
+page loads and every style="" attribute may use only allowlisted CSS (CSS_PROPERTIES and
+CSS_TOKENS), so no rule can hide, shrink, move away or recolor a statement out of sight.
 
 The check fails when a fact has no statement with an equal value, the page states a fact the
 file lacks, statements conflict, are empty, hidden or worded otherwise than approved, a fact
@@ -98,6 +102,413 @@ STATEMENT_ATTRS = {"data-fact", "data-value"}
 STATEMENT_CHILD_TAGS = {"code", "em", "strong"}
 STATEMENT_ANCESTOR_TAGS = {"html", "body", "main", "section", "article", "div", "ul", "ol"}
 STATEMENT_ANCESTOR_ATTRS = {"id", "lang", "dir"}
+
+# -- CSS the policy page loads: an allowlist, so that no rule can hide or remove a statement --
+#
+# Every declaration in every stylesheet the page loads (<link rel=stylesheet>, then @import),
+# and in every style="" attribute, must be one of CSS_PROPERTIES with a value its rule accepts,
+# whatever the selector: no display:none, visibility, opacity, positioning, transform, clip,
+# width/height, overflow, text-indent, content or tiny font sizes. Colors are only the tokens
+# below, which are defined on :root (and overridden only in @media (prefers-color-scheme:
+# dark)); every text-color token must contrast with every background token in both schemes.
+# No escapes, !important, nested rules or other at-rules.
+CSS_TOKENS = {
+    "--surface": "surface", "--surface-raised": "surface",
+    "--ink": "ink", "--ink-muted": "ink", "--accent": "ink",
+    "--font-sans": "font", "--measure": "measure", "--gutter": "length",
+}
+# Browser default text and link colors, and canvas colors, per scheme: also checked.
+UA_COLORS = {
+    "light": {"ink": ["#000000", "#0000ee", "#551a8b", "#ee0000"], "surface": ["#ffffff"]},
+    "dark": {"ink": ["#ffffff", "#9e9eff", "#d0adf0", "#ff9e9e"], "surface": ["#121212"]},
+}
+MIN_CONTRAST = 3.0
+FONT_FAMILIES = {"ibm plex sans", "system-ui", "-apple-system", "segoe ui", "roboto",
+                 "helvetica neue", "arial", "sans-serif"}
+DARK_MEDIA = "(prefers-color-scheme: dark)"
+STYLESHEET_HREF = re.compile(r"(?:\.\.?/)*(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.css")
+CSS_IMPORT_VALUE = re.compile(r"""(?:"([^"]*)"|'([^']*)'|url\(\s*(?:"([^"]*)"|'([^']*)'|([^"'()\s]*))\s*\))""",
+                              re.I)
+CSS_VAR = re.compile(r"var\(\s*(--[A-Za-z0-9_-]+)\s*\)", re.I)
+CSS_LENGTH = re.compile(r"(\d+(?:\.\d+)?|\.\d+)(px|rem)?", re.I)
+HEX_COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+
+
+def css_length(word: str, low: float, high: float, zero_ok: bool = True) -> bool:
+    """A px or rem length (or a bare 0) within [low, high] rem."""
+    match = CSS_LENGTH.fullmatch(word)
+    if not match:
+        return False
+    number, unit = float(match.group(1)), (match.group(2) or "").lower()
+    if not unit:
+        return zero_ok and number == 0 and low <= 0
+    rem = number / 16 if unit == "px" else number
+    return low <= rem <= high
+
+
+def css_var(word: str, roles: set[str]) -> bool:
+    match = CSS_VAR.fullmatch(word)
+    return bool(match) and CSS_TOKENS.get(match.group(1)) in roles
+
+
+def css_words(value: str, check, low: int = 1, high: int = 4) -> bool:
+    words = value.split()
+    return low <= len(words) <= high and all(check(w) for w in words)
+
+
+def css_box(word: str) -> bool:
+    return css_length(word, 0, 4) or css_var(word, {"length"})
+
+
+def css_line(value: str) -> bool:
+    """border/outline: width up to 4px, solid or none, a color token."""
+    def part(word: str) -> bool:
+        return (css_length(word, 0, 0.25) or word.lower() in ("solid", "none")
+                or css_var(word, {"ink", "surface"}))
+    return css_words(value, part, 1, 3)
+
+
+def css_line_height(value: str) -> bool:
+    if value.lower() == "normal":
+        return True
+    try:
+        return re.fullmatch(r"\d+(?:\.\d+)?", value) is not None and 1 <= float(value) <= 3
+    except ValueError:
+        return False
+
+
+def keywords(*allowed: str):
+    return lambda value: value.lower() in allowed
+
+
+CSS_PROPERTIES = {
+    "color": lambda v: css_var(v, {"ink"}),
+    "background": lambda v: css_var(v, {"surface"}),
+    "background-color": lambda v: css_var(v, {"surface"}),
+    "border": css_line,
+    "outline": css_line,
+    "outline-offset": lambda v: css_length(v, 0, 0.25),
+    "border-radius": lambda v: css_words(v, lambda w: css_length(w, 0, 1)),
+    "margin": lambda v: css_words(v, lambda w: css_box(w) or w.lower() == "auto"),
+    "padding": lambda v: css_words(v, css_box),
+    "max-width": lambda v: css_var(v, {"measure"}),
+    "font-family": lambda v: css_var(v, {"font"}),
+    "font-size": lambda v: css_length(v, 0.875, 4, zero_ok=False),
+    "font-weight": keywords("normal", "bold", "400", "500", "600", "700"),
+    "line-height": css_line_height,
+    "overflow-wrap": keywords("normal", "break-word", "anywhere"),
+    "text-decoration": keywords("none", "underline"),
+    "box-sizing": keywords("border-box", "content-box"),
+    "color-scheme": lambda v: " ".join(v.lower().split()) == "light dark",
+    "text-size-adjust": keywords("100%", "auto"),
+    "-webkit-text-size-adjust": keywords("100%", "auto"),
+    "display": keywords("block", "inline", "inline-block", "list-item", "flow-root"),
+}
+for _side in ("top", "right", "bottom", "left"):
+    CSS_PROPERTIES[f"margin-{_side}"] = lambda v: css_box(v) or v.lower() == "auto"
+    CSS_PROPERTIES[f"padding-{_side}"] = css_box
+
+
+def css_token_ok(name: str, value: str) -> bool:
+    role = CSS_TOKENS[name]
+    if role in ("ink", "surface"):
+        return HEX_COLOR.fullmatch(value) is not None
+    if role == "length":
+        return css_length(value, 0, 4)
+    if role == "measure":
+        return css_length(value, 20, 80, zero_ok=False)
+    families = [f.strip() for f in value.split(",")]
+    return all(re.sub(r"""^(["'])(.*)\1$""", r"\2", f).lower() in FONT_FAMILIES for f in families)
+
+
+def strip_css_comments(css: str) -> tuple[str, str | None]:
+    """(css without comments, problem). Comments become a space; strings are kept intact."""
+    out: list[str] = []
+    quote, i = "", 0
+    while i < len(css):
+        c = css[i]
+        if c == "\\":
+            return "", "CSS escapes (\\) are not allowed"
+        if quote:
+            if c in "\r\n\f":
+                return "", "unterminated CSS string"
+            if c == quote:
+                quote = ""
+        elif c in "\"'":
+            quote = c
+        elif css.startswith("/*", i):
+            end = css.find("*/", i + 2)
+            if end < 0:
+                return "", "unterminated CSS comment"
+            out.append(" ")
+            i = end + 2
+            continue
+        out.append(c)
+        i += 1
+    if quote:
+        return "", "unterminated CSS string"
+    text = "".join(out)
+    if any(not (" " <= ch <= "~" or ch in "\t\n\r\f") for ch in text):
+        return "", "CSS may hold only printable ASCII outside comments"
+    return text, None
+
+
+def css_scan(css: str, pos: int, stops: str) -> int:
+    """Index of the first stop character at or after pos outside strings and parentheses, or -1."""
+    quote, depth = "", 0
+    for i in range(pos, len(css)):
+        c = css[i]
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "\"'":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                return -1
+        elif not depth and c in stops:
+            return i
+    return -1
+
+
+def css_block_end(css: str, pos: int) -> int:
+    """Index of the } that closes the block opened just before pos, or -1."""
+    depth = 0
+    while True:
+        end = css_scan(css, pos, "{}")
+        if end < 0:
+            return -1
+        depth += 1 if css[end] == "{" else -1
+        if depth < 0:
+            return end
+        pos = end + 1
+
+
+def css_declarations(block: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """(name, value) pairs of a declaration block; property names are lower-cased."""
+    found: list[tuple[str, str]] = []
+    problems: list[str] = []
+    pos = 0
+    while pos <= len(block):
+        end = css_scan(block, pos, ";{}")
+        if end >= 0 and block[end] != ";":
+            return found, problems + ["nested CSS rules or stray braces are not allowed"]
+        if end < 0 and css_scan(block + ";", pos, ";") != len(block):
+            return found, problems + ["unbalanced parentheses in CSS"]
+        piece = block[pos:len(block) if end < 0 else end].strip()
+        pos = len(block) + 1 if end < 0 else end + 1
+        if not piece:
+            continue
+        name, sep, value = piece.partition(":")
+        name, value = name.strip(), " ".join(value.split())
+        if not sep or not re.fullmatch(r"--[A-Za-z0-9_-]+|-?[A-Za-z][A-Za-z-]*", name):
+            problems.append(f"CSS declaration {piece[:40]!r} is not allowed")
+            continue
+        if "!" in value:
+            problems.append(f"CSS {name}: !important is not allowed")
+            continue
+        found.append((name if name.startswith("--") else name.lower(), value))
+    return found, problems
+
+
+class Stylesheet:
+    """The parts of one stylesheet the policy check needs: imports and rules in order."""
+
+    def __init__(self, css: str) -> None:
+        self.imports: list[str] = []
+        # (dark-only?, selector, declarations) in source order.
+        self.rules: list[tuple[bool, str, list[tuple[str, str]]]] = []
+        self.problems: list[str] = []
+        text, problem = strip_css_comments(css)
+        if problem:
+            self.problems.append(problem)
+            return
+        self._parse(text, 0, len(text), dark=False)
+
+    def _parse(self, text: str, pos: int, stop: int, dark: bool) -> None:
+        while True:
+            while pos < stop and text[pos].isspace():
+                pos += 1
+            if pos >= stop:
+                return
+            if text[pos] == "@":
+                name = re.match(r"@([A-Za-z-]*)", text[pos:]).group(1).lower()
+                end = css_scan(text[:stop], pos, ";{}")
+                if name == "import" and not dark and end >= 0 and text[end] == ";":
+                    match = CSS_IMPORT_VALUE.fullmatch(text[pos + len("@import"):end].strip())
+                    if not match:
+                        self.problems.append("@import must name only one stylesheet URL")
+                        return
+                    self.imports.append(next(g for g in match.groups() if g is not None))
+                    pos = end + 1
+                    continue
+                if name == "media" and not dark and end >= 0 and text[end] == "{":
+                    prelude = " ".join(text[pos + len("@media"):end].lower().split())
+                    close = css_block_end(text[:stop], end + 1)
+                    if prelude.replace(": ", ":") != DARK_MEDIA.replace(": ", ":"):
+                        self.problems.append(f"@media {prelude[:40]!r} is not allowed: only "
+                                             f"@media {DARK_MEDIA}")
+                        return
+                    if close < 0:
+                        self.problems.append("unterminated @media block")
+                        return
+                    self._parse(text, end + 1, close, dark=True)
+                    pos = close + 1
+                    continue
+                self.problems.append(f"CSS at-rule @{name} is not allowed here")
+                return
+            open_ = css_scan(text[:stop], pos, "{};")
+            if open_ < 0 or text[open_] != "{":
+                self.problems.append(f"CSS {text[pos:pos + 40].strip()!r} is not a rule")
+                return
+            close = css_scan(text[:stop], open_ + 1, "{}")
+            if close < 0 or text[close] != "}":
+                self.problems.append("nested CSS rules or unterminated blocks are not allowed")
+                return
+            declarations, problems = css_declarations(text[open_ + 1:close])
+            self.problems += problems
+            self.rules.append((dark, " ".join(text[pos:open_].split()), declarations))
+            pos = close + 1
+
+
+def css_declaration_problem(name: str, value: str, selector: str | None) -> str | None:
+    """Why a declaration may not be on the policy page, or None. selector is None for style=""."""
+    if name.startswith("--"):
+        if name not in CSS_TOKENS:
+            return f"CSS custom property {name} is not allowed"
+        if selector != ":root":
+            return f"CSS custom property {name} may be set only on :root"
+        if not css_token_ok(name, value):
+            return f"CSS {name}: {value[:40]!r} is not allowed"
+        return None
+    check = CSS_PROPERTIES.get(name)
+    if check is None:
+        return f"CSS property {name} is not allowed on the policy page (it could hide statements)"
+    if not check(value):
+        return f"CSS {name}: {value[:40]!r} is not allowed on the policy page"
+    return None
+
+
+def relative_luminance(color: str) -> float:
+    digits = color[1:]
+    if len(digits) == 3:
+        digits = "".join(c * 2 for c in digits)
+    channels = [int(digits[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast(a: str, b: str) -> float:
+    high, low = sorted((relative_luminance(a), relative_luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def stylesheet_href_problem(href: str) -> str | None:
+    if STYLESHEET_HREF.fullmatch(href) is None:
+        return (f"stylesheet {href!r} must be a relative path to a .css file "
+                f"(letters, digits, . _ - and /)")
+    return None
+
+
+def page_stylesheets(page: "Page", page_path: str, read) -> tuple[list[tuple[str, str, str | None]],
+                                                                   list[str]]:
+    """Every stylesheet the page loads, in cascade order: [(key, path, content or None)], problems.
+
+    key is the path relative to the page's directory. read(path) returns the text or None.
+    Imports come before the sheet that imports them.
+    """
+    sheets: list[tuple[str, str, str | None]] = []
+    problems: list[str] = []
+    page_dir = os.path.dirname(os.path.abspath(page_path))
+    seen: set[str] = set()
+
+    def visit(href: str, from_dir: str, where: str, depth: int) -> None:
+        problem = stylesheet_href_problem(href)
+        if problem:
+            problems.append(f"{where}: {problem}")
+            return
+        path = os.path.normpath(os.path.join(from_dir, href))
+        key = os.path.relpath(path, page_dir).replace(os.sep, "/")
+        if key in seen:
+            problems.append(f"{where}: stylesheet {key} is loaded more than once")
+            return
+        if depth > 4:
+            problems.append(f"{where}: stylesheet imports are nested too deeply")
+            return
+        seen.add(key)
+        content = read(path)
+        if content is None:
+            problems.append(f"{shown(path)}: cannot read the stylesheet the policy page loads")
+            sheets.append((key, path, None))
+            return
+        for imported in Stylesheet(content).imports:
+            visit(imported, os.path.dirname(path), shown(path), depth + 1)
+        sheets.append((key, path, content))
+
+    for element in page.elements:
+        rels = element.attrs.get("rel", "").lower().split()
+        if element.tag == "link" and "stylesheet" in rels:
+            visit(element.attrs.get("href", ""), page_dir, shown(page_path), 0)
+    return sheets, problems
+
+
+def read_text_file(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str | None]],
+                 problems: list[str]) -> None:
+    """Every stylesheet and style="" the page uses holds only allowlisted CSS (CSS_PROPERTIES)."""
+    if any(e.tag == "base" for e in page.elements):
+        problems.append(f"{page_path}: the policy page may not have a <base> element")
+    tokens: dict[str, dict[str, str]] = {"light": {}, "dark": {}}
+    scheme_set = False
+    for _, path, content in sheets:
+        if content is None:
+            continue
+        where = shown(path)
+        sheet = Stylesheet(content)
+        problems += [f"{where}: {p}" for p in sheet.problems]
+        for dark, selector, declarations in sheet.rules:
+            for name, value in declarations:
+                problem = css_declaration_problem(name, value, selector)
+                if problem:
+                    problems.append(f"{where}: {problem} (in {selector[:40]!r})")
+                elif name == "color-scheme" and selector == ":root" and not dark:
+                    scheme_set = True
+                elif name.startswith("--"):
+                    for scheme in (("dark",) if dark else ("light", "dark")):
+                        tokens[scheme][name] = value
+    for element in page.elements:
+        if "style" not in element.attrs:
+            continue
+        text, problem = strip_css_comments(element.attrs["style"])
+        declarations, more = css_declarations(text) if not problem else ([], [problem])
+        for problem in more + [p for p in (css_declaration_problem(n, v, None)
+                                           for n, v in declarations) if p]:
+            problems.append(f"{page_path}: style attribute on <{element.tag}>: {problem}")
+    if sheets and not scheme_set:
+        problems.append(f"{page_path}: the stylesheet must set color-scheme: light dark on :root "
+                        f"(the browser's own colors must follow the color tokens' scheme)")
+    # An unset token makes color or background fall back to the browser's own (UA_COLORS).
+    for scheme, defined in tokens.items():
+        colors = {"ink": list(UA_COLORS[scheme]["ink"]), "surface": list(UA_COLORS[scheme]["surface"])}
+        for name, role in CSS_TOKENS.items():
+            if role in colors and name in defined:
+                colors[role].append(defined[name])
+        for ink in colors["ink"]:
+            for surface in colors["surface"]:
+                if contrast(ink, surface) < MIN_CONTRAST:
+                    problems.append(f"{page_path}: in the {scheme} scheme, text color {ink} on "
+                                    f"background {surface} has contrast "
+                                    f"{contrast(ink, surface):.2f} (needs {MIN_CONTRAST})")
 
 
 def shown(path: str) -> str:
@@ -207,7 +618,8 @@ class Page:
     def markers(self, name: str) -> list[Element]:
         return [e for e in self.elements if e.attrs.get("data-policy") == name]
 
-    def text_sha256(self) -> str | None:
+    def text_sha256(self, stylesheets: list[tuple[str, str, str | None]]) -> str | None:
+        """The policy hash. stylesheets is page_stylesheets(...)[0]: their text counts too."""
         main = [e for e in self.elements if e.tag == "main"]
         if len(main) != 1:
             return None
@@ -224,7 +636,8 @@ class Page:
                               "facts": [[key, value] for key, value, _, _ in self.statements],
                               "title": title.text if title else "",
                               "description": [normalize(d) for d in descriptions],
-                              "hrefs": hrefs},
+                              "hrefs": hrefs,
+                              "stylesheets": [[key, content] for key, _, content in stylesheets]},
                              ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -258,6 +671,12 @@ class Page:
         if len(texts) > 1 or "" in texts:
             return None, f"{name} markers are empty or disagree"
         return texts.pop(), None
+
+
+def policy_sha256(page_path: str) -> str | None:
+    """The policy hash of the page file and the stylesheets it loads, read from disk."""
+    page = Page(read_text_file(page_path) or "")
+    return page.text_sha256(page_stylesheets(page, page_path, read_text_file)[0])
 
 
 def load_page(path: str, problems: list[str]) -> Page | None:
@@ -456,10 +875,10 @@ def check_single_email(page_path: str, page: Page, email: str, problems: list[st
                         f"(found {found})")
 
 
-def check_record(page_path: str, record_path: str, page: Page, record: dict,
+def check_record(page_path: str, record_path: str, page: Page, sheets: list, record: dict,
                  problems: list[str]) -> None:
     date, problem = page.effective_date()
-    digest = page.text_sha256()
+    digest = page.text_sha256(sheets)
     if digest is None:
         problems.append(f"{page_path}: the page must have exactly one <main>")
         return
@@ -523,7 +942,7 @@ def read_previous(base: str, path: str) -> tuple[str | None, str]:
         raise PreviousRevisionError(f"{tree_path} at {base} is not UTF-8") from error
 
 
-def check_previous(page_path: str, record_path: str, page: Page, base: str,
+def check_previous(page_path: str, record_path: str, page: Page, sheets: list, base: str,
                    problems: list[str], notes: list[str]) -> None:
     """If the policy text differs from base's, the effective date must be later than base's.
 
@@ -554,12 +973,22 @@ def check_previous(page_path: str, record_path: str, page: Page, base: str,
     if page_source is None:
         problems.append(f"{page_path}: {base} has a policy record but no {page_tree}")
         return
-    previous_digest = Page(page_source).text_sha256()
+    previous_page = Page(page_source)
+
+    def read_base(path: str) -> str | None:
+        return read_previous(base, path)[0]
+
+    try:
+        previous_sheets, _ = page_stylesheets(previous_page, page_path, read_base)
+    except PreviousRevisionError as error:
+        problems.append(f"{record_path}: cannot read the previous revision's stylesheets: {error}")
+        return
+    previous_digest = previous_page.text_sha256(previous_sheets)
     if previous_digest is None:
         problems.append(f"{page_path}: the previous page ({page_tree} at {base}) has no single <main>")
         return
     date, problem = page.effective_date()
-    digest = page.text_sha256()
+    digest = page.text_sha256(sheets)
     if problem or digest is None:
         return  # reported by check_markers / check_record
     if digest != previous_digest and date <= previous_date:
@@ -582,14 +1011,17 @@ def check_privacy(facts_path: str, page_path: str = DEFAULT_PAGE,
     record = load_record(record_path, problems)
     if page is None:
         return problems
+    sheets, sheet_problems = page_stylesheets(page, page_path, read_text_file)
+    problems += sheet_problems
     if facts is not None:
         check_facts(page_path, page, facts, problems)
+    check_styles(page_path, page, sheets, problems)
     if record is not None:
         check_markers(page_path, page, record, problems)
         check_single_email(page_path, page, record["contactEmail"], problems)
-        check_record(page_path, record_path, page, record, problems)
+        check_record(page_path, record_path, page, sheets, record, problems)
     if base is not None:
-        check_previous(page_path, record_path, page, base, problems, notes)
+        check_previous(page_path, record_path, page, sheets, base, problems, notes)
     return problems
 
 
@@ -602,7 +1034,8 @@ def update_record(page_path: str = DEFAULT_PAGE,
     if page is None:
         return False, problems
     date, problem = page.effective_date()
-    digest = page.text_sha256()
+    sheets, problems = page_stylesheets(page, page_path, read_text_file)
+    digest = page.text_sha256(sheets)
     if problem:
         problems.append(f"{page_path}: {problem}")
     if digest is None:

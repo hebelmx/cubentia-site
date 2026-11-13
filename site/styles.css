@@ -44,20 +44,15 @@ body {
   overflow-wrap: break-word;
 }
 
+/* Always shown: the policy check rejects off-screen positioning on any page it loads. */
 .skip-link {
-  position: absolute;
-  left: var(--gutter);
-  top: -100%;
+  display: inline-block;
+  margin: var(--gutter) 0 0 var(--gutter);
   padding: 0.5rem 0.75rem;
   background: var(--surface-raised);
   color: var(--accent);
   border: 2px solid var(--accent);
   border-radius: 0.375rem;
-  z-index: 1;
-}
-
-.skip-link:focus {
-  top: var(--gutter);
 }
 
 :focus-visible {

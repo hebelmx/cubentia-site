@@ -171,6 +171,59 @@ class ThirdPartyResources(SiteCase):
     def test_style_element_import_fails(self) -> None:
         self.assertFails(self.build(head='<style>@import url("https://x.com/a.css");</style>'), "third-party")
 
+    def test_ping_fails(self) -> None:
+        self.assertFails(self.build(body='<a href="#main" ping="/cubentia-site/ https://x.com/t">x</a>'),
+                         "third-party", "https://x.com/t")
+
+    def test_form_action_fails(self) -> None:
+        self.assertFails(self.build(body='<form action="https://x.com/f"><button>Go</button></form>'),
+                         "third-party", "https://x.com/f")
+
+    def test_formaction_fails(self) -> None:
+        self.assertFails(self.build(body='<form><button formaction="https://x.com/f">Go</button></form>'),
+                         "third-party", "https://x.com/f")
+
+    def test_meta_refresh_fails(self) -> None:
+        self.assertFails(self.build(head='<meta http-equiv="refresh" content="0;url=https://x.com/">'),
+                         "third-party", "https://x.com/")
+
+    def test_xlink_href_fails(self) -> None:
+        self.assertFails(self.build(body='<svg><image xlink:href="https://x.com/a.png"/></svg>'),
+                         "third-party", "https://x.com/a.png")
+
+    def test_css_image_set_string_fails(self) -> None:
+        self.assertFails(self.build(css_extra='body { background-image: image-set("https://x.com/a.png" 1x); }'),
+                         "styles.css", "third-party")
+
+    def test_css_webkit_image_set_string_fails(self) -> None:
+        self.assertFails(self.build(css_extra="body { background-image: -webkit-image-set('//x.com/a.png' 1x); }"),
+                         "styles.css", "third-party")
+
+    def test_video_poster_fails(self) -> None:
+        self.assertFails(self.build(body='<video poster="https://x.com/p.png"></video>'), "third-party")
+
+    def test_object_data_fails(self) -> None:
+        self.assertFails(self.build(body='<object data="https://x.com/a"></object>'), "third-party", "<object>")
+
+    def test_td_background_fails(self) -> None:
+        self.assertFails(self.build(body='<table><tr><td background="https://x.com/a.png">x</td></tr></table>'),
+                         "third-party")
+
+    def test_preload_imagesrcset_fails(self) -> None:
+        self.assertFails(self.build(head='<link rel="preload" as="image" href="styles.css" '
+                                         'imagesrcset="https://x.com/a.png 1x">'), "third-party")
+
+    def test_embed_fails(self) -> None:
+        self.assertFails(self.build(body='<embed src="a.swf">'), "<embed>")
+
+    def test_img_data_uri_passes(self) -> None:
+        self.assertPasses(self.build(body='<img src="data:image/png;base64,iVBORw0KGgo=" alt="Dot">'))
+
+    def test_svg_external_xlink_href_fails(self) -> None:
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+               '<image xlink:href="https://x.com/a.png"/></svg>')
+        self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "third-party")
+
     def test_iframe_fails(self) -> None:
         self.assertFails(self.build(body='<iframe src="https://x.com/" title="x"></iframe>'), "<iframe>")
 
@@ -189,8 +242,29 @@ class ScriptsAndCookies(SiteCase):
     def test_javascript_url_fails(self) -> None:
         self.assertFails(self.build(body='<a href="javascript:void(0)">x</a>'), "javascript:")
 
+    def test_javascript_url_with_tab_entity_fails(self) -> None:
+        self.assertFails(self.build(body='<a href="java&#9;script:alert(1)">x</a>'), "script URL")
+
+    def test_vbscript_url_fails(self) -> None:
+        self.assertFails(self.build(body='<a href="vbscript:msgbox(1)">x</a>'), "script URL")
+
+    def test_svg_script_fails(self) -> None:
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+        self.assertFails(self.build(extra_files={"logo.svg": svg}), "logo.svg", "<script>")
+
+    def test_htm_page_is_checked(self) -> None:
+        self.assertFails(self.build(extra_files={"old.htm": "<p onclick=\"x()\">Hi</p>"}), "old.htm", "onclick")
+
     def test_set_cookie_meta_fails(self) -> None:
         self.assertFails(self.build(head='<meta http-equiv="Set-Cookie" content="a=b">'), "set-cookie")
+
+
+class UnreadableFiles(SiteCase):
+    def test_non_utf8_css_is_reported(self) -> None:
+        site = self.build()
+        with open(os.path.join(site, "extra.css"), "wb") as handle:
+            handle.write(b"body { color: \xff\xfe; }")
+        self.assertFails(site, "extra.css", "cannot be read as UTF-8")
 
 
 class RootPaths(SiteCase):
@@ -234,6 +308,11 @@ class RubikText(SiteCase):
 
     def test_rubik_in_meta_content_fails(self) -> None:
         self.assertFails(self.build(head='<meta name="description" content="A Rubik tutor">'), "meta")
+
+    def test_rubik_in_value_label_roledescription_abbr_fails(self) -> None:
+        for attr in ("value", "label", "aria-roledescription", "abbr"):
+            with self.subTest(attr=attr):
+                self.assertFails(self.build(body=f'<p {attr}="Rubik">x</p>'), attr)
 
     def test_rubik_in_href_passes(self) -> None:
         self.assertPasses(self.build(body='<a href="https://github.com/hebelmx/RubikXplorer/issues">Issues</a>'))

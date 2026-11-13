@@ -5,8 +5,10 @@ Standard library only. HTML validation is done separately by the Nu Html Checker
 (see scripts/check.sh); this script covers the rest:
 
 * every internal link and fragment resolves to a file (and an id) under the site root;
-* no resource comes from another origin (src, srcset, <link href>, CSS url(), @import);
-* no <script>, no on* event-handler attribute, no javascript: URL, no cookie meta;
+* no resource comes from another origin (src, srcset, <link href>, ping, action, formaction,
+  xlink:href, meta refresh, CSS url(), image-set() and @import); data: URIs are allowed;
+* no <script>, no on* event-handler attribute, no javascript:/vbscript: URL, no cookie meta;
+* .html, .htm, .xhtml and .svg files all get these page checks;
 * root-relative paths stay inside the GitHub Pages project path /cubentia-site/;
 * 404.html, which is served at any missing path, uses only absolute site paths;
 * the word "Rubik" never appears in page text (URLs are exempt).
@@ -28,9 +30,12 @@ PROJECT_PREFIX = "/cubentia-site/"
 NOT_FOUND_PAGE = "404.html"
 
 # Attributes whose value is a resource the browser fetches on its own.
-RESOURCE_ATTRS = {"src", "poster", "data", "background"}
+RESOURCE_ATTRS = {"src", "poster", "data", "background", "action", "formaction", "xlink:href"}
 # Attributes whose value is human-readable page text.
-TEXT_ATTRS = {"title", "alt", "aria-label", "placeholder", "aria-description"}
+TEXT_ATTRS = {
+    "title", "alt", "aria-label", "placeholder", "aria-description",
+    "value", "label", "aria-roledescription", "abbr",
+}
 # Elements whose content is not page text.
 NON_TEXT_ELEMENTS = {"style", "script"}
 
@@ -39,7 +44,25 @@ RUBIK = re.compile(r"rubik", re.I)
 CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 CSS_URL = re.compile(r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)""", re.I)
 CSS_IMPORT_STRING = re.compile(r"""@import\s+(?:"([^"]*)"|'([^']*)')""", re.I)
-SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
+CSS_IMAGE_SET = re.compile(r"(?:-webkit-)?image-set\(", re.I)
+CSS_STRING = re.compile(r""""([^"]*)"|'([^']*)'""")
+META_REFRESH_URL = re.compile(r"""^\s*\d*(?:\.\d*)?\s*[;,]?\s*(?:url\s*=\s*)?['"]?([^'"]*)""", re.I)
+PAGE_EXTENSIONS = (".html", ".htm", ".xhtml", ".svg")
+SCRIPT_SCHEMES = ("javascript", "vbscript")
+
+
+def css_image_set_strings(css: str) -> list[str]:
+    """Quoted URL strings inside image-set( ... ) and -webkit-image-set( ... )."""
+    found: list[str] = []
+    for match in CSS_IMAGE_SET.finditer(css):
+        depth, end = 1, match.end()
+        while end < len(css) and depth:
+            depth += {"(": 1, ")": -1}.get(css[end], 0)
+            end += 1
+        body = css[match.end():end - 1]
+        body = CSS_URL.sub(" ", body)  # url(...) entries are checked separately
+        found += [next(g for g in m.groups() if g is not None) for m in CSS_STRING.finditer(body)]
+    return found
 
 
 def contains_rubik(text: str) -> bool:
@@ -89,6 +112,10 @@ class PageParser(HTMLParser):
         if tag == "meta":
             if values.get("http-equiv", "").strip().lower() == "set-cookie":
                 self.problems.append('<meta http-equiv="set-cookie"> is not allowed')
+            if values.get("http-equiv", "").strip().lower() == "refresh":
+                match = META_REFRESH_URL.match(values.get("content", ""))
+                if match and match.group(1).strip():
+                    self.resources.append(match.group(1).strip())
             if contains_rubik(values.get("content", "")):
                 self.problems.append('"Rubik" in content of <meta>')
         if tag in {"a", "area"} and "href" in values:
@@ -97,6 +124,8 @@ class PageParser(HTMLParser):
             self.resources.append(values["href"])
         for name in RESOURCE_ATTRS & values.keys():
             self.resources.append(values[name])
+        if "ping" in values:
+            self.resources.extend(values["ping"].split())
         for name in ("srcset", "imagesrcset"):
             if name in values:
                 for candidate in values[name].split(","):
@@ -155,12 +184,15 @@ class SiteChecker:
         Returns "" for URLs that need no file check (external navigation, fragment-only).
         """
         parts = urlsplit(url.strip())
-        if url.strip().lower().startswith("javascript:"):
-            self._report(rel_file, f"javascript: URL {url!r} is not allowed")
+        raw = url.strip().lower()
+        if raw.startswith(tuple(f"{s}:" for s in SCRIPT_SCHEMES)) or parts.scheme.lower() in SCRIPT_SCHEMES:
+            self._report(rel_file, f"script URL {url!r} (javascript:/vbscript:) is not allowed")
             return None
         if parts.scheme or url.strip().startswith("//"):
             if kind == "link":
                 return ""  # external navigation is allowed
+            if parts.scheme.lower() == "data":
+                return ""  # inline data is not fetched from another origin
             self._report(rel_file, f"third-party {kind} {url!r}: resources must be same-origin")
             return None
         path = unquote(parts.path)
@@ -203,7 +235,7 @@ class SiteChecker:
 
     def _check_fragment(self, rel_file: str, url: str, target: str) -> None:
         fragment = unquote(urlsplit(url.strip()).fragment)
-        if not fragment or not target.endswith(".html"):
+        if not fragment or not target.endswith(PAGE_EXTENSIONS):
             return
         page = self._page(target)
         if page is None or fragment not in page.ids:
@@ -213,6 +245,7 @@ class SiteChecker:
         css = CSS_COMMENT.sub("", css)
         urls = [next(g for g in m.groups() if g is not None) for m in CSS_URL.finditer(css)]
         urls += [next(g for g in m.groups() if g is not None) for m in CSS_IMPORT_STRING.finditer(css)]
+        urls += css_image_set_strings(css)
         for url in urls:
             url = url.strip()
             if not url or url.startswith("#"):
@@ -233,7 +266,7 @@ class SiteChecker:
             for name in sorted(names):
                 files.append(self._rel(os.path.join(root, name)))
         for rel_file in files:
-            if rel_file.endswith(".html"):
+            if rel_file.endswith(PAGE_EXTENSIONS):
                 page = self._page(rel_file)
                 if page is None:
                     self._report(rel_file, "cannot be read as UTF-8")
@@ -249,8 +282,13 @@ class SiteChecker:
                 for css in page.css_blocks:
                     self._check_css(rel_file, css)
             elif rel_file.endswith(".css"):
-                with open(os.path.join(self.site_dir, rel_file), encoding="utf-8") as handle:
-                    self._check_css(rel_file, handle.read())
+                try:
+                    with open(os.path.join(self.site_dir, rel_file), encoding="utf-8") as handle:
+                        css = handle.read()
+                except (OSError, UnicodeDecodeError):
+                    self._report(rel_file, "cannot be read as UTF-8")
+                    continue
+                self._check_css(rel_file, css)
         return self.problems
 
 

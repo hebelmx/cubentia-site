@@ -1,0 +1,6 @@
+# Python bytecode from running the checker and its tests
+__pycache__/
+*.pyc
+
+# Local preview directory created by scripts/preview.sh
+.preview.*/

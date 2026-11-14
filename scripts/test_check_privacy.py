@@ -14,13 +14,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from check_privacy import check_privacy, policy_sha256, update_record  # noqa: E402
+from check_privacy import APPROVED_WORDING, check_privacy, policy_sha256, update_record  # noqa: E402
 
 CHECKER = os.path.join(HERE, "check_privacy.py")
 CHECK_SH = os.path.join(HERE, "check.sh")
@@ -32,6 +31,11 @@ CAMERA_FIXTURE = os.path.join(HERE, "fixtures", "privacy-facts-v2-camera.json")
 CAMERA_PERMISSION = "android.permission.CAMERA"
 CAMERA_TEXT = ("Cubentia uses the camera to read your cube's colors. It reads them on this "
                "device. Nothing is saved or sent.")
+# The approved runtimePermissions sentence for [CAMERA] (PO decision 2026-11-14).
+CAMERA_PERMISSION_TEXT = ("The app asks for one runtime permission: the camera, and only when you "
+                          "choose to scan your cube. If you say no, everything except scanning "
+                          "still works. It does not use the microphone, location, contacts or "
+                          "your files.")
 NO_PERMISSION_TEXT = ("The app asks for no runtime permission. It does not use the camera, "
                       "microphone, location, contacts or your files.")
 NO_PERMISSION = ('<li data-fact="runtimePermissions" data-value="[]">The app asks for no runtime '
@@ -731,22 +735,14 @@ class BadFacts(PrivacyCase):
 class CameraFacts(PrivacyCase):
     """Schema 2: cameraFramesLeaveDevice: false, present exactly when CAMERA is requested."""
 
-    # The policy's wording for runtimePermissions = [CAMERA] is not approved yet (a PO
-    # decision); these tests supply a stand-in so only the camera rules are under test.
-    CAMERA_PERMISSION_TEXT = "Stand-in wording for the camera permission."
-
     def setUp(self) -> None:
         super().setUp()
         self.camera_facts = json.loads(read(CAMERA_FIXTURE))
-        patcher = mock.patch.dict("check_privacy.APPROVED_WORDING", {
-            "runtimePermissions": {"[]": NO_PERMISSION_TEXT,
-                                   f'["{CAMERA_PERMISSION}"]': self.CAMERA_PERMISSION_TEXT}})
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
-    def camera_page(self, camera_sentence: str | None = CAMERA_TEXT) -> str:
+    def camera_page(self, camera_sentence: str | None = CAMERA_TEXT,
+                    permission_sentence: str = CAMERA_PERMISSION_TEXT) -> str:
         new = (f'<li data-fact="runtimePermissions" data-value="[&quot;{CAMERA_PERMISSION}'
-               f'&quot;]">{self.CAMERA_PERMISSION_TEXT}</li>')
+               f'&quot;]">{permission_sentence}</li>')
         if camera_sentence is not None:
             new += (f'\n      <li data-fact="cameraFramesLeaveDevice" data-value="false">'
                     f'{camera_sentence}</li>')
@@ -774,6 +770,25 @@ class CameraFacts(PrivacyCase):
         page = self.camera_page("Cubentia uses the camera to read your cube's colors.")
         self.assertFails("statement for fact 'cameraFramesLeaveDevice'", "approved wording",
                          page=page, record=self.dated(page), facts=self.camera_facts)
+
+    def test_camera_permission_wording_is_approved(self) -> None:
+        self.assertEqual(APPROVED_WORDING["runtimePermissions"], {
+            "[]": NO_PERMISSION_TEXT, f'["{CAMERA_PERMISSION}"]': CAMERA_PERMISSION_TEXT})
+
+    def test_schema_2_with_both_approved_camera_sentences_passes(self) -> None:
+        page = self.camera_page(CAMERA_TEXT, CAMERA_PERMISSION_TEXT)
+        self.assertIn(CAMERA_TEXT, page)
+        self.assertIn(CAMERA_PERMISSION_TEXT, page)
+        self.assertPasses(page=page, record=self.dated(page), facts=self.camera_facts)
+
+    def test_camera_permission_sentence_must_be_the_approved_copy(self) -> None:
+        reworded = CAMERA_PERMISSION_TEXT.replace("only when you choose to scan your cube",
+                                                  "whenever the app is open")
+        self.assertNotEqual(reworded, CAMERA_PERMISSION_TEXT)
+        page = self.camera_page(permission_sentence=reworded)
+        problems = self.assertFails("statement for fact 'runtimePermissions'", "approved wording",
+                                    page=page, record=self.dated(page), facts=self.camera_facts)
+        self.assertTrue(all("runtimePermissions" in p for p in problems), problems)
 
     def test_schema_2_without_camera_fails(self) -> None:
         facts = {**self.camera_facts, "runtimePermissions": []}

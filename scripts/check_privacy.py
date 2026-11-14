@@ -4,7 +4,9 @@
 Standard library only. Three inputs:
 
 * the facts file, docs/privacy-facts.json from the app repository (Story 13.3). Every key
-  except schemaVersion is a fact, and schemaVersion must be 1;
+  except schemaVersion is a fact, and schemaVersion must be 1 or 2. Schema 2 adds the fixed
+  fact cameraFramesLeaveDevice: false, present exactly when runtimePermissions holds
+  android.permission.CAMERA (schema_2_rules);
 * the page, site/privacy/index.html. A statement is an element with data-fact="<key>",
   data-value="<value>" and non-empty text. <value> is the raw string for a JSON string and
   compact JSON otherwise (false, [], ...). data-policy markers name the publisher, the Play
@@ -67,7 +69,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PAGE = os.path.join(ROOT, "site", "privacy", "index.html")
 DEFAULT_RECORD = os.path.join(ROOT, "privacy-policy.json")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSIONS = (1, 2)
+CAMERA_PERMISSION = "android.permission.CAMERA"
+CAMERA_FACT = "cameraFramesLeaveDevice"
 RECORD_FIELDS = ("publisher", "playDeveloper", "contactEmail", "effectiveDate", "textSha256")
 VOID_ELEMENTS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
                  "param", "source", "track", "wbr"}
@@ -82,6 +86,9 @@ PACKAGE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+")
 APPROVED_WORDING: dict[str, dict[str, str]] = {
     "dataLeavesDevice": {"false": "Cubentia collects no personal data and shares none. "
                                   "Nothing you do in the app leaves your device."},
+    # Schema 2: the approved in-app camera copy (PO decision 2026-11-14).
+    CAMERA_FACT: {"false": "Cubentia uses the camera to read your cube's colors. It reads them "
+                           "on this device. Nothing is saved or sent."},
     "account": {"false": "There is no account and no sign-in."},
     "ads": {"false": "There are no ads."},
     "analytics": {"false": "There is no analytics and no usage tracking."},
@@ -753,10 +760,37 @@ def load_facts(path: str, problems: list[str]) -> dict[str, str] | None:
     if data is None:
         return None
     version = data.get("schemaVersion")
-    if type(version) is not int or version != SCHEMA_VERSION:
-        problems.append(f"{path}: unsupported schemaVersion {version!r} (expected {SCHEMA_VERSION})")
+    if type(version) is not int or version not in SCHEMA_VERSIONS:
+        problems.append(f"{path}: unsupported schemaVersion {version!r} "
+                        f"(expected one of {', '.join(map(str, SCHEMA_VERSIONS))})")
+        return None
+    if not schema_2_rules(path, data, version, problems):
         return None
     return {key: fact_value(value) for key, value in data.items() if key != "schemaVersion"}
+
+
+def schema_2_rules(path: str, data: dict, version: int, problems: list[str]) -> bool:
+    """Schema 2 is schema 1 plus cameraFramesLeaveDevice: false, which is present exactly when
+    runtimePermissions holds the camera permission. Any other combination fails."""
+    permissions = data.get("runtimePermissions")
+    camera = isinstance(permissions, list) and CAMERA_PERMISSION in permissions
+    found: list[str] = []
+    if version == 2 and not camera:
+        found.append(f"{path}: schemaVersion 2 requires runtimePermissions to contain "
+                     f"{CAMERA_PERMISSION}")
+    if camera and version != 2:
+        found.append(f"{path}: runtimePermissions contains {CAMERA_PERMISSION}, which needs "
+                     f"schemaVersion 2 (found {version})")
+    if CAMERA_FACT in data and not camera:
+        found.append(f"{path}: {CAMERA_FACT} may only be present when runtimePermissions "
+                     f"contains {CAMERA_PERMISSION}")
+    if camera and CAMERA_FACT not in data:
+        found.append(f"{path}: runtimePermissions contains {CAMERA_PERMISSION}, so the facts "
+                     f"file must state {CAMERA_FACT}: false")
+    elif CAMERA_FACT in data and data[CAMERA_FACT] is not False:
+        found.append(f"{path}: {CAMERA_FACT} must be false (found {data[CAMERA_FACT]!r})")
+    problems += found
+    return not found
 
 
 def load_record(path: str, problems: list[str]) -> dict | None:

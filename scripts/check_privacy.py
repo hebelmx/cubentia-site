@@ -98,7 +98,13 @@ APPROVED_WORDING: dict[str, dict[str, str]] = {
     "internetPermission": {"false": "The app has no internet permission, so it cannot send "
                                     "anything over the network."},
     "runtimePermissions": {"[]": "The app asks for no runtime permission. It does not use the "
-                                 "camera, microphone, location, contacts or your files."},
+                                 "camera, microphone, location, contacts or your files.",
+                           # Schema 2: the camera permission (PO decision 2026-11-14).
+                           '["android.permission.CAMERA"]':
+                               "The app asks for one runtime permission: the camera, and only "
+                               "when you choose to scan your cube. If you say no, everything "
+                               "except scanning still works. It does not use the microphone, "
+                               "location, contacts or your files."},
     "backupAllowed": {"false": "The app does not allow backup, so your progress is not copied "
                                "to a cloud backup or to another device."},
     "storage": {"app-private": "Your progress is stored only on your device, in storage that "

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -27,6 +28,15 @@ PAGE = os.path.join(ROOT, "site", "privacy", "index.html")
 STYLES = os.path.join(ROOT, "site", "styles.css")
 RECORD = os.path.join(ROOT, "privacy-policy.json")
 FIXTURE = os.path.join(HERE, "fixtures", "privacy-facts.json")
+CAMERA_FIXTURE = os.path.join(HERE, "fixtures", "privacy-facts-v2-camera.json")
+CAMERA_PERMISSION = "android.permission.CAMERA"
+CAMERA_TEXT = ("Cubentia uses the camera to read your cube's colors. It reads them on this "
+               "device. Nothing is saved or sent.")
+NO_PERMISSION_TEXT = ("The app asks for no runtime permission. It does not use the camera, "
+                      "microphone, location, contacts or your files.")
+NO_PERMISSION = ('<li data-fact="runtimePermissions" data-value="[]">The app asks for no runtime '
+                 'permission. It does not use the camera, microphone, location, contacts or '
+                 'your files.</li>')
 DATE_MARKER = '<time data-policy="effective-date" datetime="2026-11-14">14 November 2026</time>'
 CONTACT = ('<a data-policy="contact" href="mailto:exxerpro@exxerpro.com">'
            'exxerpro@exxerpro.com</a>')
@@ -145,8 +155,11 @@ class Facts(PrivacyCase):
         self.assertIn("'false'", line)
 
     def test_list_value_differs(self) -> None:
+        # Schema 2 with the camera fact, so only the runtimePermissions value differs.
         self.assertFails("fact 'runtimePermissions'", '\'["android.permission.CAMERA"]\'',
-                         facts={**self.facts, "runtimePermissions": ["android.permission.CAMERA"]})
+                         facts={**self.facts, "schemaVersion": 2,
+                                "runtimePermissions": ["android.permission.CAMERA"],
+                                "cameraFramesLeaveDevice": False})
 
     def test_extra_fact_on_page(self) -> None:
         page = self.page_with("</ul>", '<li data-fact="location" data-value="false">No location.</li></ul>')
@@ -698,7 +711,13 @@ class BadFacts(PrivacyCase):
         self.assertFails("must be a JSON object", facts="[]")
 
     def test_schema_version_two(self) -> None:
-        self.assertFails("unsupported schemaVersion 2", facts={**self.facts, "schemaVersion": 2})
+        # Schema 2 is supported, but only with the camera permission and fact (see CameraFacts).
+        self.assertFails("schemaVersion 2 requires runtimePermissions to contain",
+                         facts={**self.facts, "schemaVersion": 2})
+
+    def test_schema_version_three(self) -> None:
+        self.assertFails("unsupported schemaVersion 3", facts={**self.facts, "schemaVersion": 3})
+        self.assertFails("unsupported schemaVersion 0", facts={**self.facts, "schemaVersion": 0})
 
     def test_schema_version_missing(self) -> None:
         facts = {k: v for k, v in self.facts.items() if k != "schemaVersion"}
@@ -707,6 +726,80 @@ class BadFacts(PrivacyCase):
     def test_schema_version_not_int(self) -> None:
         self.assertFails("unsupported schemaVersion", facts={**self.facts, "schemaVersion": "1"})
         self.assertFails("unsupported schemaVersion", facts={**self.facts, "schemaVersion": True})
+
+
+class CameraFacts(PrivacyCase):
+    """Schema 2: cameraFramesLeaveDevice: false, present exactly when CAMERA is requested."""
+
+    # The policy's wording for runtimePermissions = [CAMERA] is not approved yet (a PO
+    # decision); these tests supply a stand-in so only the camera rules are under test.
+    CAMERA_PERMISSION_TEXT = "Stand-in wording for the camera permission."
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.camera_facts = json.loads(read(CAMERA_FIXTURE))
+        patcher = mock.patch.dict("check_privacy.APPROVED_WORDING", {
+            "runtimePermissions": {"[]": NO_PERMISSION_TEXT,
+                                   f'["{CAMERA_PERMISSION}"]': self.CAMERA_PERMISSION_TEXT}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def camera_page(self, camera_sentence: str | None = CAMERA_TEXT) -> str:
+        new = (f'<li data-fact="runtimePermissions" data-value="[&quot;{CAMERA_PERMISSION}'
+               f'&quot;]">{self.CAMERA_PERMISSION_TEXT}</li>')
+        if camera_sentence is not None:
+            new += (f'\n      <li data-fact="cameraFramesLeaveDevice" data-value="false">'
+                    f'{camera_sentence}</li>')
+        return self.page_with(NO_PERMISSION, new)
+
+    def test_fixture_is_schema_2_with_camera(self) -> None:
+        self.assertEqual(self.camera_facts, {
+            **self.facts, "schemaVersion": 2, "runtimePermissions": [CAMERA_PERMISSION],
+            "cameraFramesLeaveDevice": False})
+
+    def test_schema_1_without_camera_still_passes(self) -> None:
+        self.assertEqual(self.facts["schemaVersion"], 1)
+        self.assertPasses()
+
+    def test_schema_2_with_camera_and_sentence_passes(self) -> None:
+        page = self.camera_page()
+        self.assertPasses(page=page, record=self.dated(page), facts=self.camera_facts)
+
+    def test_schema_2_without_camera_sentence_fails(self) -> None:
+        page = self.camera_page(None)
+        self.assertFails("no statement for fact 'cameraFramesLeaveDevice'",
+                         page=page, record=self.dated(page), facts=self.camera_facts)
+
+    def test_camera_sentence_must_be_the_approved_copy(self) -> None:
+        page = self.camera_page("Cubentia uses the camera to read your cube's colors.")
+        self.assertFails("statement for fact 'cameraFramesLeaveDevice'", "approved wording",
+                         page=page, record=self.dated(page), facts=self.camera_facts)
+
+    def test_schema_2_without_camera_fails(self) -> None:
+        facts = {**self.camera_facts, "runtimePermissions": []}
+        self.assertFails("schemaVersion 2 requires runtimePermissions to contain",
+                         "may only be present when", facts=facts)
+
+    def test_camera_without_schema_2_fails(self) -> None:
+        facts = {**self.camera_facts, "schemaVersion": 1}
+        self.assertFails("needs schemaVersion 2 (found 1)", facts=facts)
+        facts = {k: v for k, v in facts.items() if k != "cameraFramesLeaveDevice"}
+        self.assertFails("needs schemaVersion 2 (found 1)", "must state cameraFramesLeaveDevice",
+                         facts=facts)
+
+    def test_camera_fact_missing_fails(self) -> None:
+        facts = {k: v for k, v in self.camera_facts.items() if k != "cameraFramesLeaveDevice"}
+        self.assertFails("must state cameraFramesLeaveDevice: false", facts=facts)
+
+    def test_camera_fact_not_false_fails(self) -> None:
+        for value in (True, 0, "false", None):
+            with self.subTest(value=value):
+                self.assertFails("cameraFramesLeaveDevice must be false",
+                                 facts={**self.camera_facts, "cameraFramesLeaveDevice": value})
+
+    def test_camera_fact_without_camera_on_schema_1_fails(self) -> None:
+        self.assertFails("may only be present when",
+                         facts={**self.facts, "cameraFramesLeaveDevice": False})
 
 
 class Update(PrivacyCase):

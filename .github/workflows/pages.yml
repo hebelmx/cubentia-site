@@ -66,12 +66,21 @@ jobs:
             exit 1
           fi
 
+      - name: Require APP_REF
+        env:
+          APP_REF: ${{ vars.APP_REF }}
+        run: |
+          if [ -z "${APP_REF}" ]; then
+            echo "::error::Repository variable APP_REF is not set (expected the app release tag whose privacy facts the site states, or main before the first tagged facts)."
+            exit 1
+          fi
+
       # The app repository is public: the default token is enough, and only the facts file is read.
       - name: Check out the app's privacy facts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ vars.APP_REPO }}
-          ref: main
+          ref: ${{ vars.APP_REF }}
           path: app-facts
           sparse-checkout: docs/privacy-facts.json
           sparse-checkout-cone-mode: false

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "applicationId": "com.exxerpro.cubentia",
+  "internetPermission": false,
+  "backupAllowed": false,
+  "runtimePermissions": [
+    "android.permission.CAMERA"
+  ],
+  "denylistedSdks": [],
+  "account": false,
+  "ads": false,
+  "analytics": false,
+  "crashReporting": false,
+  "dataLeavesDevice": false,
+  "storage": "app-private",
+  "cameraFramesLeaveDevice": false
+}

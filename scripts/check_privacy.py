@@ -401,12 +401,16 @@ class Stylesheet:
             pos = close + 1
 
 
+THEME_TOGGLE_ROOT = ":root:has(#theme-toggle:checked)"
+ROOT_SELECTORS = {":root", THEME_TOGGLE_ROOT}
+
+
 def css_declaration_problem(name: str, value: str, selector: str | None) -> str | None:
     """Why a declaration may not be on the policy page, or None. selector is None for style=""."""
     if name.startswith("--"):
         if name not in CSS_TOKENS:
             return f"CSS custom property {name} is not allowed"
-        if selector != ":root":
+        if selector not in ROOT_SELECTORS:
             return f"CSS custom property {name} may be set only on :root"
         if not css_token_ok(name, value):
             return f"CSS {name}: {value[:40]!r} is not allowed"
@@ -495,7 +499,8 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
     """Every stylesheet and style="" the page uses holds only allowlisted CSS (CSS_PROPERTIES)."""
     if any(e.tag == "base" for e in page.elements):
         problems.append(f"{page_path}: the policy page may not have a <base> element")
-    tokens: dict[str, dict[str, str]] = {"light": {}, "dark": {}}
+    tokens: dict[str, dict[str, str]] = {"light": {}, "dark": {}, "light-toggled": {}, "dark-toggled": {}}
+    active_schemes = ["light", "dark"]
     line_tokens: set[str] = set()
     scheme_set = False
     links_colored = False
@@ -517,7 +522,14 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
                 elif name == "color" and selector == "a" and not dark:
                     links_colored = True
                 elif name.startswith("--"):
-                    for scheme in (("dark",) if dark else ("light", "dark")):
+                    if selector == THEME_TOGGLE_ROOT:
+                        targets = ("dark-toggled",) if dark else ("light-toggled", "dark-toggled")
+                        for t in targets:
+                            if t not in active_schemes:
+                                active_schemes.append(t)
+                    else:
+                        targets = ("dark", "dark-toggled") if dark else ("light", "dark", "light-toggled", "dark-toggled")
+                    for scheme in targets:
                         tokens[scheme][name] = value
     for element in page.elements:
         if "style" not in element.attrs:
@@ -534,10 +546,12 @@ def check_styles(page_path: str, page: "Page", sheets: list[tuple[str, str, str 
         problems.append(f"{page_path}: the stylesheet must set color-scheme: light dark on :root "
                         f"(the browser's own colors must follow the color tokens' scheme)")
     # An unset token makes color or background fall back to the browser's own (UA_COLORS).
-    for scheme, defined in tokens.items():
-        colors = {"ink": list(UA_COLORS[scheme]["ink"]), "surface": list(UA_COLORS[scheme]["surface"])}
+    for scheme in active_schemes:
+        defined = tokens[scheme]
+        ua_scheme = {"light": "light", "dark": "dark", "light-toggled": "dark", "dark-toggled": "light"}[scheme]
+        colors = {"ink": list(UA_COLORS[ua_scheme]["ink"]), "surface": list(UA_COLORS[ua_scheme]["surface"])}
         if not links_colored:
-            colors["ink"] += UA_LINK_COLORS[scheme]
+            colors["ink"] += UA_LINK_COLORS[ua_scheme]
         for name, role in CSS_TOKENS.items():
             if role in colors and name in defined:
                 colors[role].append(defined[name])

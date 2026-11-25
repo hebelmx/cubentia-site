@@ -41,7 +41,7 @@ NO_PERMISSION_TEXT = ("The app asks for no runtime permission. It does not use t
 NO_PERMISSION = ('<li data-fact="runtimePermissions" data-value="[]">The app asks for no runtime '
                  'permission. It does not use the camera, microphone, location, contacts or '
                  'your files.</li>')
-DATE_MARKER = '<time data-policy="effective-date" datetime="2026-11-20">20 November 2026</time>'
+DATE_MARKER = '<time data-policy="effective-date" datetime="2026-11-25">25 November 2026</time>'
 CONTACT = ('<a data-policy="contact" href="mailto:exxerpro@exxerpro.com">'
            'exxerpro@exxerpro.com</a>')
 INTERNET = '<li data-fact="internetPermission" data-value="false">'
@@ -128,7 +128,7 @@ class MatchingPage(PrivacyCase):
         self.assertEqual(self.record["publisher"], "Exxerpro Solutions, S.A. de C.V.")
         self.assertEqual(self.record["playDeveloper"], "Abel Briones")
         self.assertEqual(self.record["contactEmail"], "exxerpro@exxerpro.com")
-        self.assertEqual(self.record["effectiveDate"], "2026-11-20")
+        self.assertEqual(self.record["effectiveDate"], "2026-11-25")
 
     def test_cli_ok_and_failure(self) -> None:
         self.write()
@@ -225,19 +225,19 @@ class Markers(PrivacyCase):
         self.assertFails("contact marker reads 'exxerpro@exxerpro.com'", record=record)
 
     def test_effective_date_missing(self) -> None:
-        page = self.page_with(DATE_MARKER, "20 November 2026")
+        page = self.page_with(DATE_MARKER, "25 November 2026")
         self.assertFails("missing effective date marker", page=page)
 
     def test_effective_date_not_time(self) -> None:
-        page = self.page_with(DATE_MARKER, '<span data-policy="effective-date">20 November 2026</span>')
+        page = self.page_with(DATE_MARKER, '<span data-policy="effective-date">25 November 2026</span>')
         self.assertFails("must be a <time", page=page)
 
     def test_effective_date_bad_format(self) -> None:
-        page = self.page_with('datetime="2026-11-20"', 'datetime="13/11/2026"')
+        page = self.page_with('datetime="2026-11-25"', 'datetime="13/11/2026"')
         self.assertFails("invalid datetime '13/11/2026'", page=page)
 
     def test_effective_date_impossible(self) -> None:
-        page = self.page_with('datetime="2026-11-20"', 'datetime="2026-02-30"')
+        page = self.page_with('datetime="2026-11-25"', 'datetime="2026-02-30"')
         self.assertFails("invalid datetime '2026-02-30'", page=page)
 
 
@@ -290,9 +290,9 @@ class Record(PrivacyCase):
         self.assertFails("policy text changed without a new effective date", page=page)
 
     def test_effective_date_text_must_match_datetime(self) -> None:
-        page = self.page_with(DATE_MARKER, DATE_MARKER.replace('datetime="2026-11-20"',
+        page = self.page_with(DATE_MARKER, DATE_MARKER.replace('datetime="2026-11-25"',
                                                                'datetime="2026-11-21"'))
-        self.assertFails("effective date marker reads '20 November 2026'", page=page)
+        self.assertFails("effective date marker reads '25 November 2026'", page=page)
 
     def test_non_ascii_list_fact_matches(self) -> None:
         facts = {**self.facts, "runtimePermissions": ["permiso.cámara"]}
@@ -305,12 +305,12 @@ class Record(PrivacyCase):
         self.assertIn("has no approved wording yet", problems[0])
 
     def test_new_date_not_recorded(self) -> None:
-        page = self.page_with('datetime="2026-11-20">20 November 2026', 'datetime="2026-12-01">1 December 2026')
+        page = self.page_with('datetime="2026-11-25">25 November 2026', 'datetime="2026-12-01">1 December 2026')
         self.assertFails("is not recorded", "--update", page=page)
 
     def test_date_earlier_than_record(self) -> None:
-        page = self.page_with('datetime="2026-11-20">20 November 2026', 'datetime="2026-11-01">1 November 2026')
-        self.assertFails("earlier than the recorded 2026-11-20", page=page)
+        page = self.page_with('datetime="2026-11-25">25 November 2026', 'datetime="2026-11-01">1 November 2026')
+        self.assertFails("earlier than the recorded 2026-11-25", page=page)
 
     def test_record_missing(self) -> None:
         self.assertFails("policy record not found", record=False)
@@ -819,7 +819,7 @@ class CameraFacts(PrivacyCase):
 
 class Update(PrivacyCase):
     def test_later_date_rewrites_the_record(self) -> None:
-        page = self.page_with('datetime="2026-11-20">20 November 2026', 'datetime="2026-12-01">1 December 2026')
+        page = self.page_with('datetime="2026-11-25">25 November 2026', 'datetime="2026-12-01">1 December 2026')
         page = page.replace(CHANGES_TEXT, "When this policy changes, this page shows a new date.")
         self.write(page=page)
         ok, messages = update_record(self.page_path, self.record_path)
@@ -850,7 +850,7 @@ class Update(PrivacyCase):
                 "--record", self.record_path]
         refused = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(refused.returncode, 1)
-        self.write(page=self.page_with('datetime="2026-11-20">20 November 2026', 'datetime="2026-12-01">1 December 2026'))
+        self.write(page=self.page_with('datetime="2026-11-25">25 November 2026', 'datetime="2026-12-01">1 December 2026'))
         updated = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
 
@@ -894,7 +894,7 @@ class PreviousRevision(unittest.TestCase):
     """
 
     NEW_DATE = 'datetime="2026-12-01">1 December 2026'
-    OLD_DATE = 'datetime="2026-11-20">20 November 2026'
+    OLD_DATE = 'datetime="2026-11-25">25 November 2026'
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()

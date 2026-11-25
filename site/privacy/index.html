@@ -19,7 +19,7 @@
   </header>
   <main id="main">
     <h1>Privacy policy</h1>
-    <p>Effective <time data-policy="effective-date" datetime="2026-11-20">20 November 2026</time></p>
+    <p>Effective <time data-policy="effective-date" datetime="2026-11-25">25 November 2026</time></p>
     <p>This policy covers the Cubentia app for Android and this website. Cubentia is made by <span data-policy="publisher">Exxerpro Solutions, S.A. de C.V.</span> (published on Google Play as <span data-policy="play-developer">Abel Briones</span>).</p>
     <p data-fact="applicationId" data-value="com.exxerpro.cubentia">The app this policy covers has the Android package name <code>com.exxerpro.cubentia</code>.</p>
 
@@ -31,14 +31,20 @@
       <li data-fact="analytics" data-value="false">There is no analytics and no usage tracking.</li>
       <li data-fact="crashReporting" data-value="false">There is no crash reporting.</li>
       <li data-fact="denylistedSdks" data-value="[]">The app contains no advertising, analytics or crash-reporting libraries.</li>
-    </ul>
-
-    <h2>Permissions</h2>
-    <ul>
       <li data-fact="internetPermission" data-value="false">The app has no internet permission, so it cannot send anything over the network.</li>
-      <li data-fact="runtimePermissions" data-value="[]">The app asks for no runtime permission. It does not use the camera, microphone, location, contacts or your files.</li>
       <li data-fact="backupAllowed" data-value="false">The app does not allow backup, so your progress is not copied to a cloud backup or to another device.</li>
     </ul>
+
+    <h2>Camera use during testing</h2>
+    <h3>Closed testing</h3>
+    <p>Camera features are turned off in the closed testing build submitted for approval.</p>
+    <ul>
+      <li data-fact="runtimePermissions" data-value="[]">The app asks for no runtime permission. It does not use the camera, microphone, location, contacts or your files.</li>
+    </ul>
+
+    <h3>Planned open testing</h3>
+    <p>In the open testing release, you will be able to scan your cube. Cubentia will ask for camera permission when you choose to scan. You can decline and keep using the app without scanning.</p>
+    <p>During a scan, Cubentia will read the cube’s colors on your device and discard the camera images after processing. Any saved progress will stay in the app’s private storage on your device. Cubentia will not collect or share images or scan data.</p>
 
     <h2>Your progress</h2>
     <p data-fact="storage" data-value="app-private">Your progress is stored only on your device, in storage that only the app can read. Uninstalling the app removes it.</p>
